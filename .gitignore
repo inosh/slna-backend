@@ -1,0 +1,6 @@
+node_modules/
+.env
+uploads/news/*
+uploads/albums/*
+!uploads/news/.gitkeep
+!uploads/albums/.gitkeep
