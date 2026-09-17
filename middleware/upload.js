@@ -38,7 +38,7 @@ const documentFilter = (req, file, cb) => {
 const uploadNewsPhoto = multer({
   storage: makeStorage('news'),
   fileFilter: imageFilter,
-  limits: { fileSize: 8 * 1024 * 1024 }, // 8MB max
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB max
 });
 
 const uploadNewsDocument = multer({
@@ -50,7 +50,7 @@ const uploadNewsDocument = multer({
 const uploadAlbumPhotos = multer({
   storage: makeStorage('albums'),
   fileFilter: imageFilter,
-  limits: { fileSize: 8 * 1024 * 1024 },
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB max
 });
 
 module.exports = { uploadNewsPhoto, uploadNewsDocument, uploadAlbumPhotos };
