@@ -11,6 +11,9 @@ require('dotenv').config();
 const authRoutes = require('./routes/auth');
 const newsRoutes = require('./routes/news');
 const albumRoutes = require('./routes/albums');
+const membershipApplicationsRoutes = require(
+    './routes/membership-applications'
+);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -26,6 +29,10 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/api/auth', authRoutes);
 app.use('/api/news', newsRoutes);
 app.use('/api/albums', albumRoutes);
+app.use(
+    '/api/membership',
+    membershipApplicationsRoutes
+);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'SLNA backend is running.' });
@@ -33,6 +40,21 @@ app.get('/api/health', (req, res) => {
 
 app.use('/api', (req, res) => {
   res.status(404).json({ error: 'API endpoint not found.' });
+});
+
+app.use(function (error, req, res, next) {
+  console.error(error);
+
+  const statusCode = error.statusCode || 500;
+
+  res.status(statusCode).json({
+    success: false,
+    message:
+        statusCode >= 500
+            ? 'An unexpected server error occurred. Please try again later.'
+            : error.message,
+    details: error.details || undefined
+  });
 });
 
 // ============================================================
@@ -65,6 +87,29 @@ app.use((err, req, res, next) => {
   // message shown to the admin user generic and non-alarming.
   console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Something went wrong on the server. Please try again, or contact your website administrator if the problem continues.' });
+});
+
+app.use(function (error, req, res, next) {
+  console.error('Unhandled API error:', error);
+
+  if (res.headersSent) {
+    return next(error);
+  }
+
+  const statusCode = error.statusCode || 500;
+
+  return res.status(statusCode).json({
+    success: false,
+    error:
+        statusCode >= 500
+            ? 'The server could not complete this request. Please try again or contact the system administrator.'
+            : error.message,
+    message:
+        statusCode >= 500
+            ? 'The server could not complete this request. Please try again or contact the system administrator.'
+            : error.message,
+    details: error.details || undefined
+  });
 });
 
 app.listen(PORT, () => {
