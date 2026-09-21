@@ -34,11 +34,6 @@ const allowedMimeTypes = {
     idPhoto: [
         'image/jpeg',
         'image/png'
-    ],
-
-    signaturePhoto: [
-        'image/jpeg',
-        'image/png'
     ]
 };
 
@@ -356,7 +351,7 @@ const upload = multer({
 
     limits: {
         fileSize: MAX_FILE_SIZE,
-        files: 3
+        files: 2
     },
 
     fileFilter: function (req, file, callback) {
@@ -526,16 +521,12 @@ function validateRequiredFields(body) {
 function requireUploadedFiles(files) {
     const missingFiles = [];
 
-    if (!files.paymentReceipt || !files.paymentReceipt[0]) {
+    if (!files || !files.paymentReceipt || !files.paymentReceipt[0]) {
         missingFiles.push('Bank receipt is required.');
     }
 
-    if (!files.idPhoto || !files.idPhoto[0]) {
+    if (!files || !files.idPhoto || !files.idPhoto[0]) {
         missingFiles.push('Passport-size photograph is required.');
-    }
-
-    if (!files.signaturePhoto || !files.signaturePhoto[0]) {
-        missingFiles.push('Signature image is required.');
     }
 
     if (missingFiles.length > 0) {
@@ -551,8 +542,7 @@ router.post(
 
     upload.fields([
         { name: 'paymentReceipt', maxCount: 1 },
-        { name: 'idPhoto', maxCount: 1 },
-        { name: 'signaturePhoto', maxCount: 1 }
+        { name: 'idPhoto', maxCount: 1 }
     ]),
 
     async function (req, res, next) {
@@ -564,7 +554,6 @@ router.post(
 
             const receipt = req.files.paymentReceipt[0];
             const photo = req.files.idPhoto[0];
-            const signature = req.files.signaturePhoto[0];
 
             const result = await pool.query(
                 `
@@ -607,9 +596,6 @@ router.post(
                         id_photo_path,
                         id_photo_original_name,
 
-                        signature_photo_path,
-                        signature_photo_original_name,
-
                         declaration_confirmed
                     )
                     VALUES (
@@ -626,8 +612,6 @@ router.post(
                                $27, $28,
 
                                $29, $30,
-
-                               $31, $32,
 
                                TRUE
                            )
@@ -672,10 +656,7 @@ router.post(
                     receipt.originalname,
 
                     privateStorageKey(photo),
-                    photo.originalname,
-
-                    privateStorageKey(signature),
-                    signature.originalname
+                    photo.originalname
                 ]
             );
 
@@ -991,6 +972,20 @@ router.patch(
                 application: applicationToAdminJson(result.rows[0])
             });
         } catch (error) {
+            if (
+                error &&
+                error.code === '23505' &&
+                error.constraint ===
+                'membership_applications_membership_number_key'
+            ) {
+                return res.status(409).json({
+                    success: false,
+                    message:
+                        'This membership number is already assigned to another member. Please enter a different membership number.',
+                    field: 'membershipNumber'
+                });
+            }
+
             return next(error);
         }
     }
@@ -1496,7 +1491,7 @@ router.get(
                 .fillColor('#555555')
                 .text(
                     'Generated for SLNA administrative ID application processing. ' +
-                    'Passport photograph and signature are maintained separately.',
+                    'The passport photograph is maintained separately.',
                     left,
                     770,
                     {
@@ -1741,7 +1736,6 @@ router.patch(
  *
  * GET /api/membership/admin/applications/:referenceNumber/files/receipt
  * GET /api/membership/admin/applications/:referenceNumber/files/photo
- * GET /api/membership/admin/applications/:referenceNumber/files/signature
  */
 router.get(
     '/admin/applications/:referenceNumber/files/:fileType',
@@ -1769,12 +1763,6 @@ router.get(
                     pathColumn: 'id_photo_path',
                     originalNameColumn:
                         'id_photo_original_name'
-                },
-
-                signature: {
-                    pathColumn: 'signature_photo_path',
-                    originalNameColumn:
-                        'signature_photo_original_name'
                 }
             };
 
