@@ -4,3 +4,6 @@ uploads/news/*
 uploads/albums/*
 !uploads/news/.gitkeep
 !uploads/albums/.gitkeep
+private-uploads/
+.idea
+package-lock.json
