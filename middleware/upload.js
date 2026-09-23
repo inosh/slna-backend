@@ -53,4 +53,16 @@ const uploadAlbumPhotos = multer({
   limits: { fileSize: 15 * 1024 * 1024 }, // 15MB max
 });
 
-module.exports = { uploadNewsPhoto, uploadNewsDocument, uploadAlbumPhotos };
+// Event photos (CPD and Other events)
+const uploadEventPhoto = multer({
+  storage: makeStorage('events'),
+  fileFilter: imageFilter,
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB max
+});
+
+module.exports = {
+  uploadNewsPhoto,
+  uploadNewsDocument,
+  uploadAlbumPhotos,
+  uploadEventPhoto,
+};
