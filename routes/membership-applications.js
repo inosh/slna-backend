@@ -447,12 +447,16 @@ function validateRequiredFields(body) {
         ['maritalStatus', 'Marital status is required.'],
         ['permanentAddress', 'Permanent address is required.'],
         ['currentWorkingPlace', 'Current working place is required.'],
+        ['officialAddress', 'Official address is required.'],
         ['mobileNumber', 'Mobile number is required.'],
         ['emailAddress', 'Email address is required.'],
         ['slncRegistrationNumber', 'SLNC registration number is required.'],
+        ['slncRegistrationDate', 'SLNC registration date is required.'],
         ['designation', 'Designation is required.'],
-        ['paymentReference', 'Bank transfer reference is required.'],
-        ['transferDate', 'Bank transfer date is required.'],
+        ['firstAppointmentDate', 'First appointment date is required.'],
+        ['firstAppointmentPlace', 'First appointment place is required.'],
+        ['nursingSchool', 'Nursing school / university is required.'],
+        ['batch', 'Batch is required.'],
         ['declaration', 'You must confirm the declaration.']
     ];
 
@@ -492,21 +496,11 @@ function validateRequiredFields(body) {
         errors.push('Please provide a valid date of birth.');
     }
 
-    if (!safeDate(body.transferDate)) {
-        errors.push('Please provide a valid bank transfer date.');
-    }
-
-    if (
-        body.slncRegistrationDate &&
-        !safeDate(body.slncRegistrationDate)
-    ) {
+    if (!safeDate(body.slncRegistrationDate)) {
         errors.push('Please provide a valid SLNC registration date.');
     }
 
-    if (
-        body.firstAppointmentDate &&
-        !safeDate(body.firstAppointmentDate)
-    ) {
+    if (!safeDate(body.firstAppointmentDate)) {
         errors.push('Please provide a valid first appointment date.');
     }
 
@@ -649,7 +643,7 @@ router.post(
                     cleanText(req.body.batch) || null,
                     cleanText(req.body.higherEducationalQualification) || null,
 
-                    cleanText(req.body.paymentReference),
+                    cleanText(req.body.paymentReference) || null,
                     safeDate(req.body.transferDate),
 
                     privateStorageKey(receipt),
