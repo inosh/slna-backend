@@ -113,6 +113,108 @@ CREATE INDEX IF NOT EXISTS idx_events_status
     (status COLLATE pg_catalog."default" ASC NULLS LAST)
     TABLESPACE pg_default;
 
+-- Table: public.cpd_events
+-- Dedicated table for CPD Events (workshops, training, webinars, seminars,
+-- study days, conferences). "Other Events" continue to use public.events.
+
+-- DROP TABLE IF EXISTS public.cpd_events;
+
+CREATE TABLE IF NOT EXISTS public.cpd_events
+(
+    id serial NOT NULL,
+    event_type text COLLATE pg_catalog."default" NOT NULL,
+    title text COLLATE pg_catalog."default" NOT NULL,
+    event_date date NOT NULL,
+    "time" text COLLATE pg_catalog."default" NOT NULL,
+    location text COLLATE pg_catalog."default" NOT NULL,
+    summary text COLLATE pg_catalog."default" NOT NULL,
+    status text COLLATE pg_catalog."default" NOT NULL,
+    audience text COLLATE pg_catalog."default" NOT NULL,
+    member_fee numeric(10,2) NOT NULL DEFAULT 0,
+    non_member_fee numeric(10,2) NOT NULL DEFAULT 0,
+    photo_url text COLLATE pg_catalog."default",
+    photo_filename text COLLATE pg_catalog."default",
+    attachment_url text COLLATE pg_catalog."default",
+    attachment_filename text COLLATE pg_catalog."default",
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    updated_at timestamp with time zone NOT NULL DEFAULT now(),
+    CONSTRAINT cpd_events_pkey PRIMARY KEY (id),
+    CONSTRAINT cpd_events_audience_check CHECK (audience = ANY (ARRAY['Open for Public'::text, 'Members Only'::text])),
+    CONSTRAINT cpd_events_member_fee_check CHECK (member_fee >= 0),
+    CONSTRAINT cpd_events_non_member_fee_check CHECK (non_member_fee >= 0)
+    )
+
+    TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.cpd_events
+    OWNER to postgres;
+-- Index: idx_cpd_events_date
+
+-- DROP INDEX IF EXISTS public.idx_cpd_events_date;
+
+CREATE INDEX IF NOT EXISTS idx_cpd_events_date
+    ON public.cpd_events USING btree
+    (event_date ASC NULLS LAST)
+    TABLESPACE pg_default;
+-- Index: idx_cpd_events_status
+
+-- DROP INDEX IF EXISTS public.idx_cpd_events_status;
+
+CREATE INDEX IF NOT EXISTS idx_cpd_events_status
+    ON public.cpd_events USING btree
+    (status COLLATE pg_catalog."default" ASC NULLS LAST)
+    TABLESPACE pg_default;
+
+-- Table: public.event_registrations
+-- One shared table for registrations against any event category (currently
+-- CPD events only). event_id/event_category are a logical reference, not a
+-- database foreign key, since "cpd" and "other" events live in separate
+-- tables. event_title/event_date are captured at registration time so the
+-- record stays meaningful even if the event is later edited or removed.
+
+-- DROP TABLE IF EXISTS public.event_registrations;
+
+CREATE TABLE IF NOT EXISTS public.event_registrations
+(
+    id serial NOT NULL,
+    event_category text COLLATE pg_catalog."default" NOT NULL DEFAULT 'cpd',
+    event_id integer NOT NULL,
+    event_title text COLLATE pg_catalog."default" NOT NULL,
+    event_date date NOT NULL,
+    registrant_type text COLLATE pg_catalog."default" NOT NULL,
+    paid_amount numeric(10,2) NOT NULL DEFAULT 0,
+    membership_number text COLLATE pg_catalog."default",
+    nic text COLLATE pg_catalog."default" NOT NULL,
+    full_name text COLLATE pg_catalog."default" NOT NULL,
+    slnc_registration_number text COLLATE pg_catalog."default" NOT NULL,
+    email text COLLATE pg_catalog."default" NOT NULL,
+    mobile text COLLATE pg_catalog."default" NOT NULL,
+    certificate_issue_name text COLLATE pg_catalog."default" NOT NULL,
+    postal_address text COLLATE pg_catalog."default" NOT NULL,
+    workplace text COLLATE pg_catalog."default" NOT NULL,
+    workplace_address text COLLATE pg_catalog."default" NOT NULL,
+    pay_by text COLLATE pg_catalog."default" NOT NULL,
+    receipt_url text COLLATE pg_catalog."default" NOT NULL,
+    receipt_filename text COLLATE pg_catalog."default" NOT NULL,
+    status text COLLATE pg_catalog."default" NOT NULL DEFAULT 'Pending',
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    updated_at timestamp with time zone NOT NULL DEFAULT now(),
+    CONSTRAINT event_registrations_pkey PRIMARY KEY (id),
+    CONSTRAINT event_registrations_category_check CHECK (event_category = ANY (ARRAY['cpd'::text, 'other'::text])),
+    CONSTRAINT event_registrations_registrant_type_check CHECK (registrant_type = ANY (ARRAY['Member'::text, 'Non-Member'::text])),
+    CONSTRAINT event_registrations_pay_by_check CHECK (pay_by = ANY (ARRAY['Organization'::text, 'Individual'::text]))
+    )
+
+    TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.event_registrations
+    OWNER to postgres;
+
+CREATE INDEX IF NOT EXISTS idx_event_registrations_event
+    ON public.event_registrations USING btree
+    (event_category COLLATE pg_catalog."default" ASC NULLS LAST, event_id ASC NULLS LAST)
+    TABLESPACE pg_default;
+
 
 -- Table: public.membership_applications
 
