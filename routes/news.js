@@ -10,6 +10,39 @@ const { uploadNewsPhoto, uploadNewsDocument } = require('../middleware/upload');
 
 const router = express.Router();
 
+// Allowed values for news.news_type -- kept in sync with the CHECK constraint
+// added by db/migrate-news-type-album.js.
+const NEWS_TYPES = [
+  'International Nurses Day',
+  'Annual General Meeting',
+  'General Meeting',
+  'CPD Event',
+  'General News',
+];
+
+// Creates an album from gallery photos uploaded alongside a news item, using
+// the news title/date as the album title/date, and returns the new album id.
+// Must run inside the same transaction as the news insert. Returns null when
+// no gallery photos were uploaded (news items don't require a gallery).
+async function createAlbumForNews(client, { title, event_date, files, createdBy }) {
+  if (!files || files.length === 0) return null;
+
+  const albumResult = await client.query(
+    'INSERT INTO albums (title, event_date, created_by) VALUES ($1, $2, $3) RETURNING id',
+    [title, event_date, createdBy]
+  );
+  const albumId = albumResult.rows[0].id;
+
+  await Promise.all(files.map((file, index) =>
+    client.query(
+      'INSERT INTO album_photos (album_id, photo_url, display_order) VALUES ($1, $2, $3)',
+      [albumId, `/uploads/news/${file.filename}`, index]
+    )
+  ));
+
+  return albumId;
+}
+
 // GET /api/news - list all news items, newest first (PUBLIC)
 router.get('/', async (req, res) => {
   try {
@@ -23,14 +56,23 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/news/:id - get a single news item by ID (PUBLIC)
+// GET /api/news/:id - get a single news item by ID, including its linked
+// photo album (if any), for the news detail page gallery (PUBLIC)
 router.get('/:id', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM news WHERE id = $1', [req.params.id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'News item not found.' });
     }
-    res.json(result.rows[0]);
+    const newsItem = result.rows[0];
+    if (newsItem.album_id) {
+      const photosResult = await pool.query(
+        'SELECT * FROM album_photos WHERE album_id = $1 ORDER BY display_order ASC, id ASC',
+        [newsItem.album_id]
+      );
+      newsItem.photos = photosResult.rows;
+    }
+    res.json(newsItem);
   } catch (err) {
     console.error('Error fetching news item:', err);
     res.status(500).json({ error: 'Failed to fetch news item.' });
@@ -38,41 +80,74 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/news/typed - create a news item typed directly in the UI (PROTECTED)
-router.post('/typed', requireAuth, uploadNewsPhoto.single('photo'), async (req, res) => {
-  const { title, event_date, summary, body } = req.body;
+// "photo" is the single cover photo; "photos" (optional, multiple) becomes a
+// linked photo album, titled/dated after this news item.
+router.post(
+  '/typed',
+  requireAuth,
+  uploadNewsPhoto.fields([{ name: 'photo', maxCount: 1 }, { name: 'photos', maxCount: 30 }]),
+  async (req, res) => {
+    const { title, event_date, summary, body, news_type } = req.body;
 
-  if (!title || !event_date || !body) {
-    return res.status(400).json({ error: 'Title, date, and content are required.' });
+    if (!title || !event_date || !body || !news_type) {
+      return res.status(400).json({ error: 'Title, date, type, and content are required.' });
+    }
+    if (!NEWS_TYPES.includes(news_type)) {
+      return res.status(400).json({ error: 'Invalid news type.' });
+    }
+
+    const coverFile = req.files && req.files['photo'] ? req.files['photo'][0] : null;
+    const galleryFiles = req.files && req.files['photos'] ? req.files['photos'] : [];
+    const photoUrl = coverFile ? `/uploads/news/${coverFile.filename}` : null;
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const albumId = await createAlbumForNews(client, {
+        title, event_date, files: galleryFiles, createdBy: req.user.id,
+      });
+
+      const result = await client.query(
+        `INSERT INTO news (title, event_date, summary, body, source, photo_url, news_type, album_id, created_by)
+         VALUES ($1, $2, $3, $4, 'typed', $5, $6, $7, $8) RETURNING *`,
+        [title, event_date, summary || null, body, photoUrl, news_type, albumId, req.user.id]
+      );
+
+      await client.query('COMMIT');
+      res.status(201).json(result.rows[0]);
+    } catch (err) {
+      await client.query('ROLLBACK');
+      console.error('Error creating news item:', err);
+      res.status(500).json({ error: 'Failed to create news item.' });
+    } finally {
+      client.release();
+    }
   }
-
-  const photoUrl = req.file ? `/uploads/news/${req.file.filename}` : null;
-
-  try {
-    const result = await pool.query(
-      `INSERT INTO news (title, event_date, summary, body, source, photo_url, created_by)
-       VALUES ($1, $2, $3, $4, 'typed', $5, $6) RETURNING *`,
-      [title, event_date, summary || null, body, photoUrl, req.user.id]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch (err) {
-    console.error('Error creating news item:', err);
-    res.status(500).json({ error: 'Failed to create news item.' });
-  }
-});
+);
 
 // POST /api/news/upload - create a news item from an uploaded document (PROTECTED)
-// Accepts a document (.txt/.pdf/.docx) and an optional photo in the same request.
+// Accepts a document (.txt/.pdf/.docx), an optional cover photo, and optional
+// gallery photos (become a linked album) in the same request.
 router.post(
   '/upload',
   requireAuth,
-  uploadNewsDocument.fields([{ name: 'document', maxCount: 1 }, { name: 'photo', maxCount: 1 }]),
+  uploadNewsDocument.fields([
+    { name: 'document', maxCount: 1 },
+    { name: 'photo', maxCount: 1 },
+    { name: 'photos', maxCount: 30 },
+  ]),
   async (req, res) => {
-    const { title, event_date, summary } = req.body;
+    const { title, event_date, summary, news_type } = req.body;
     const documentFile = req.files && req.files['document'] ? req.files['document'][0] : null;
     const photoFile = req.files && req.files['photo'] ? req.files['photo'][0] : null;
+    const galleryFiles = req.files && req.files['photos'] ? req.files['photos'] : [];
 
-    if (!title || !event_date || !documentFile) {
-      return res.status(400).json({ error: 'Title, date, and a document file are required.' });
+    if (!title || !event_date || !documentFile || !news_type) {
+      return res.status(400).json({ error: 'Title, date, type, and a document file are required.' });
+    }
+    if (!NEWS_TYPES.includes(news_type)) {
+      return res.status(400).json({ error: 'Invalid news type.' });
     }
 
     let body = req.body.body || '';
@@ -91,16 +166,28 @@ router.post(
 
     const photoUrl = photoFile ? `/uploads/news/${photoFile.filename}` : null;
 
+    const client = await pool.connect();
     try {
-      const result = await pool.query(
-        `INSERT INTO news (title, event_date, summary, body, source, file_name, photo_url, created_by)
-         VALUES ($1, $2, $3, $4, 'file', $5, $6, $7) RETURNING *`,
-        [title, event_date, summary || body.substring(0, 180), body, documentFile.originalname, photoUrl, req.user.id]
+      await client.query('BEGIN');
+
+      const albumId = await createAlbumForNews(client, {
+        title, event_date, files: galleryFiles, createdBy: req.user.id,
+      });
+
+      const result = await client.query(
+        `INSERT INTO news (title, event_date, summary, body, source, file_name, photo_url, news_type, album_id, created_by)
+         VALUES ($1, $2, $3, $4, 'file', $5, $6, $7, $8, $9) RETURNING *`,
+        [title, event_date, summary || body.substring(0, 180), body, documentFile.originalname, photoUrl, news_type, albumId, req.user.id]
       );
+
+      await client.query('COMMIT');
       res.status(201).json(result.rows[0]);
     } catch (err) {
+      await client.query('ROLLBACK');
       console.error('Error creating news item from upload:', err);
       res.status(500).json({ error: 'Failed to create news item.' });
+    } finally {
+      client.release();
     }
   }
 );

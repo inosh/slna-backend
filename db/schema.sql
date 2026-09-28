@@ -61,6 +61,55 @@ CREATE INDEX IF NOT EXISTS idx_albums_event_date
     (event_date DESC NULLS FIRST)
     TABLESPACE pg_default;
 
+-- Table: public.news
+
+-- DROP TABLE IF EXISTS public.news;
+
+CREATE TABLE IF NOT EXISTS public.news
+(
+    id serial NOT NULL,
+    title character varying(255) COLLATE pg_catalog."default" NOT NULL,
+    event_date date NOT NULL,
+    summary text COLLATE pg_catalog."default",
+    body text COLLATE pg_catalog."default" NOT NULL,
+    source character varying(20) COLLATE pg_catalog."default" NOT NULL DEFAULT 'typed'::character varying,
+    file_name character varying(255) COLLATE pg_catalog."default",
+    photo_url character varying(500) COLLATE pg_catalog."default",
+    news_type character varying(50) COLLATE pg_catalog."default" NOT NULL DEFAULT 'General News'::character varying,
+    album_id integer,
+    created_by integer,
+    created_at timestamp without time zone NOT NULL DEFAULT now(),
+    updated_at timestamp without time zone NOT NULL DEFAULT now(),
+    CONSTRAINT news_pkey PRIMARY KEY (id),
+    CONSTRAINT news_news_type_check CHECK (news_type::text = ANY (ARRAY['International Nurses Day'::character varying, 'Annual General Meeting'::character varying, 'General Meeting'::character varying, 'CPD Event'::character varying, 'General News'::character varying]::text[])),
+    -- Soft reference: deleting an album (from the Add Photos/Albums page)
+    -- clears album_id back to NULL instead of being blocked or deleting
+    -- the news item; deleting the news item never touches the album.
+    CONSTRAINT news_album_id_fkey FOREIGN KEY (album_id)
+    REFERENCES public.albums (id) MATCH SIMPLE
+                         ON UPDATE NO ACTION
+                         ON DELETE SET NULL,
+    CONSTRAINT news_created_by_fkey FOREIGN KEY (created_by)
+    REFERENCES public.users (id) MATCH SIMPLE
+                         ON UPDATE NO ACTION
+                         ON DELETE SET NULL
+    )
+
+    TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.news
+    OWNER to postgres;
+
+CREATE INDEX IF NOT EXISTS idx_news_event_date
+    ON public.news USING btree
+    (event_date DESC NULLS FIRST)
+    TABLESPACE pg_default;
+
+CREATE INDEX IF NOT EXISTS idx_news_album_id
+    ON public.news USING btree
+    (album_id ASC NULLS LAST)
+    TABLESPACE pg_default;
+
 -- Table: public.events
 
 -- DROP TABLE IF EXISTS public.events;
