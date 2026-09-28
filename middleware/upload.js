@@ -74,9 +74,18 @@ const uploadNewsPhoto = multer({
   limits: { fileSize: 15 * 1024 * 1024 }, // 15MB max
 });
 
+// News create/update: the "document" field (typed .txt/.pdf/.docx) needs the
+// document filter, while "photo" (cover) and "photos" (gallery, becomes a
+// linked album) are images -- route each field to the right filter by name.
+const newsUploadFilter = (req, file, cb) => {
+  if (file.fieldname === 'document') return documentFilter(req, file, cb);
+  if (file.fieldname === 'photo' || file.fieldname === 'photos') return imageFilter(req, file, cb);
+  cb(new Error('Unexpected upload field.'));
+};
+
 const uploadNewsDocument = multer({
   storage: makeStorage('news'),
-  fileFilter: documentFilter,
+  fileFilter: newsUploadFilter,
   limits: { fileSize: 15 * 1024 * 1024 }, // 15MB max
 });
 
