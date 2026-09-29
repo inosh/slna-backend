@@ -43,6 +43,26 @@ async function createAlbumForNews(client, { title, event_date, files, createdBy 
   return albumId;
 }
 
+// Replaces an existing album's photos entirely (delete + re-insert) and
+// refreshes its title/date to match the news item it's linked to. Used when
+// an admin edits a news item and chooses to override the album -- the admin
+// must re-upload every photo, since this does not merge with what's there.
+// Must run inside the same transaction as the news update.
+async function replaceAlbumPhotos(client, albumId, { title, event_date, files }) {
+  await client.query('DELETE FROM album_photos WHERE album_id = $1', [albumId]);
+  await client.query(
+    'UPDATE albums SET title = $1, event_date = $2 WHERE id = $3',
+    [title, event_date, albumId]
+  );
+
+  await Promise.all(files.map((file, index) =>
+    client.query(
+      'INSERT INTO album_photos (album_id, photo_url, display_order) VALUES ($1, $2, $3)',
+      [albumId, `/uploads/news/${file.filename}`, index]
+    )
+  ));
+}
+
 // GET /api/news - list all news items, newest first (PUBLIC)
 router.get('/', async (req, res) => {
   try {
@@ -186,6 +206,86 @@ router.post(
       await client.query('ROLLBACK');
       console.error('Error creating news item from upload:', err);
       res.status(500).json({ error: 'Failed to create news item.' });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// PUT /api/news/:id - update a news item's fields (PROTECTED)
+// Cover photo ("photo") is replaced only if a new file is sent, otherwise the
+// existing one is kept. The linked album is left untouched unless
+// "override_album" is 'true', in which case its photos are replaced entirely
+// with whatever is sent in "photos" (the admin must re-upload every photo --
+// this does not merge with the album's existing contents). If the news item
+// has no album yet and override_album is 'true' with photos attached, a new
+// album is created, same as on initial publish.
+router.put(
+  '/:id',
+  requireAuth,
+  uploadNewsPhoto.fields([{ name: 'photo', maxCount: 1 }, { name: 'photos', maxCount: 30 }]),
+  async (req, res) => {
+    const { title, event_date, summary, body, news_type } = req.body;
+    const overrideAlbum = req.body.override_album === 'true';
+
+    if (!title || !event_date || !body || !news_type) {
+      return res.status(400).json({ error: 'Title, date, type, and content are required.' });
+    }
+    if (!NEWS_TYPES.includes(news_type)) {
+      return res.status(400).json({ error: 'Invalid news type.' });
+    }
+
+    const coverFile = req.files && req.files['photo'] ? req.files['photo'][0] : null;
+    const galleryFiles = req.files && req.files['photos'] ? req.files['photos'] : [];
+
+    if (overrideAlbum && galleryFiles.length === 0) {
+      return res.status(400).json({
+        error: 'Please upload the album photos again -- all photos must be re-uploaded when replacing an album.',
+      });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const existingResult = await client.query(
+        'SELECT * FROM news WHERE id = $1 FOR UPDATE',
+        [req.params.id]
+      );
+      if (existingResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'News item not found.' });
+      }
+      const existing = existingResult.rows[0];
+
+      const photoUrl = coverFile ? `/uploads/news/${coverFile.filename}` : existing.photo_url;
+
+      let albumId = existing.album_id;
+      if (overrideAlbum) {
+        if (albumId) {
+          await replaceAlbumPhotos(client, albumId, { title, event_date, files: galleryFiles });
+        } else {
+          albumId = await createAlbumForNews(client, {
+            title, event_date, files: galleryFiles, createdBy: req.user.id,
+          });
+        }
+      }
+
+      const result = await client.query(
+        `UPDATE news
+         SET title = $1, event_date = $2, summary = $3, body = $4, news_type = $5,
+             photo_url = $6, album_id = $7, updated_at = NOW()
+         WHERE id = $8
+         RETURNING *`,
+        [title, event_date, summary || null, body, news_type, photoUrl, albumId, req.params.id]
+      );
+
+      await client.query('COMMIT');
+      res.json(result.rows[0]);
+    } catch (err) {
+      await client.query('ROLLBACK');
+      console.error('Error updating news item:', err);
+      res.status(500).json({ error: 'Failed to update news item.' });
     } finally {
       client.release();
     }
