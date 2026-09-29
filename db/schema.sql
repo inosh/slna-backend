@@ -463,6 +463,43 @@ CREATE INDEX IF NOT EXISTS idx_membership_applications_status
     (application_status COLLATE pg_catalog."default" ASC NULLS LAST)
     TABLESPACE pg_default;
 
+-- Table: public.contact_queries
+-- Submissions from the Contact SLNA form (general inquiries, feedback,
+-- membership queries, etc.).
+
+-- DROP TABLE IF EXISTS public.contact_queries;
+
+CREATE TABLE IF NOT EXISTS public.contact_queries
+(
+    id bigserial NOT NULL,
+    full_name text COLLATE pg_catalog."default" NOT NULL,
+    email text COLLATE pg_catalog."default" NOT NULL,
+    mobile_number text COLLATE pg_catalog."default" NOT NULL,
+    subject text COLLATE pg_catalog."default" NOT NULL,
+    message text COLLATE pg_catalog."default" NOT NULL,
+    status text COLLATE pg_catalog."default" NOT NULL DEFAULT 'new'::text,
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    updated_at timestamp with time zone NOT NULL DEFAULT now(),
+    CONSTRAINT contact_queries_pkey PRIMARY KEY (id),
+    CONSTRAINT contact_queries_subject_check CHECK (subject = ANY (ARRAY['general'::text, 'feedback'::text, 'membership'::text, 'events'::text, 'other'::text])),
+    CONSTRAINT contact_queries_status_check CHECK (status = ANY (ARRAY['new'::text, 'read'::text]))
+    )
+
+    TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.contact_queries
+    OWNER to postgres;
+
+CREATE INDEX IF NOT EXISTS idx_contact_queries_status
+    ON public.contact_queries USING btree
+    (status COLLATE pg_catalog."default" ASC NULLS LAST)
+    TABLESPACE pg_default;
+
+CREATE INDEX IF NOT EXISTS idx_contact_queries_created_at
+    ON public.contact_queries USING btree
+    (created_at DESC NULLS LAST)
+    TABLESPACE pg_default;
+
 -- Table: public.users
 
 -- DROP TABLE IF EXISTS public.users;
