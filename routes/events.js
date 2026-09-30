@@ -121,6 +121,10 @@ function normaliseCpdEvent(row) {
     photo_filename: row.photo_filename,
     attachment_url: row.attachment_url,
     attachment_filename: row.attachment_filename,
+    // Only present on the admin list query (which joins it in) -- omitted
+    // (rather than coerced to 0) everywhere else so it doesn't imply "zero
+    // registrations" when it was never actually counted.
+    registration_count: row.registration_count === undefined ? undefined : Number(row.registration_count),
     created_at: row.created_at,
     updated_at: row.updated_at
   };
@@ -284,7 +288,11 @@ router.post(
 // List CPD events
 router.get('/cpd', async function (req, res) {
   const sql = `
-    SELECT *
+    SELECT cpd_events.*,
+      (
+        SELECT COUNT(*) FROM event_registrations er
+        WHERE er.event_category = 'cpd' AND er.event_id = cpd_events.id
+      ) AS registration_count
     FROM cpd_events
     ORDER BY event_date ASC, id DESC
   `;
@@ -480,24 +488,39 @@ router.put(
   }
 );
 
-// Delete CPD event
+// Delete CPD event. There's no FK between event_registrations and
+// cpd_events (event_id there is a loose category+id pair, not a real
+// reference), so its registrations are deleted explicitly in the same
+// transaction -- otherwise they'd be silently orphaned.
 router.delete(
   '/cpd/:id',
   requireAuth,
   async function (req, res) {
-    const sql = 'DELETE FROM cpd_events WHERE id = $1';
+    const client = await db.connect();
 
     try {
-      const result = await db.query(sql, [req.params.id]);
+      await client.query('BEGIN');
+
+      await client.query(
+        "DELETE FROM event_registrations WHERE event_category = 'cpd' AND event_id = $1",
+        [req.params.id]
+      );
+
+      const result = await client.query('DELETE FROM cpd_events WHERE id = $1', [req.params.id]);
 
       if (!result.rowCount) {
+        await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Event not found.' });
       }
 
+      await client.query('COMMIT');
       return res.json({ message: 'Event deleted.' });
     } catch (error) {
+      await client.query('ROLLBACK');
       console.error('Could not delete CPD event:', error);
       return res.status(500).json({ error: 'Could not delete event.' });
+    } finally {
+      client.release();
     }
   }
 );
@@ -521,6 +544,7 @@ function normaliseOtherEvent(row) {
     status: row.status,
     photo_url: row.photo_url,
     photo_filename: row.photo_filename,
+    registration_count: row.registration_count === undefined ? undefined : Number(row.registration_count),
     created_at: row.created_at,
     updated_at: row.updated_at
   };
@@ -619,7 +643,11 @@ router.post(
 // List Other events
 router.get('/other', async function (req, res) {
   const sql = `
-    SELECT *
+    SELECT events.*,
+      (
+        SELECT COUNT(*) FROM event_registrations er
+        WHERE er.event_category = 'other' AND er.event_id = events.id
+      ) AS registration_count
     FROM events
     WHERE category = 'other'
     ORDER BY event_date ASC, id DESC
@@ -764,24 +792,40 @@ router.put(
   }
 );
 
-// Delete Other event
+// Delete Other event. Same loose-reference situation as CPD events --
+// registrations are deleted explicitly in the same transaction.
 router.delete(
   '/other/:id',
   requireAuth,
   async function (req, res) {
-    const sql = "DELETE FROM events WHERE id = $1 AND category = 'other'";
+    const client = await db.connect();
 
     try {
-      const result = await db.query(sql, [req.params.id]);
+      await client.query('BEGIN');
+
+      await client.query(
+        "DELETE FROM event_registrations WHERE event_category = 'other' AND event_id = $1",
+        [req.params.id]
+      );
+
+      const result = await client.query(
+        "DELETE FROM events WHERE id = $1 AND category = 'other'",
+        [req.params.id]
+      );
 
       if (!result.rowCount) {
+        await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Event not found.' });
       }
 
+      await client.query('COMMIT');
       return res.json({ message: 'Event deleted.' });
     } catch (error) {
+      await client.query('ROLLBACK');
       console.error('Could not delete event:', error);
       return res.status(500).json({ error: 'Could not delete event.' });
+    } finally {
+      client.release();
     }
   }
 );
