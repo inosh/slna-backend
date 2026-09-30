@@ -48,21 +48,6 @@ app.use('/api', (req, res) => {
   res.status(404).json({ error: 'API endpoint not found.' });
 });
 
-app.use(function (error, req, res, next) {
-  console.error(error);
-
-  const statusCode = error.statusCode || 500;
-
-  res.status(statusCode).json({
-    success: false,
-    message:
-        statusCode >= 500
-            ? 'An unexpected server error occurred. Please try again later.'
-            : error.message,
-    details: error.details || undefined
-  });
-});
-
 // ============================================================
 // UPDATED ERROR HANDLER
 // Gives clear, human-readable messages for common upload
@@ -73,7 +58,7 @@ app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({
-        error: 'That file is too large. Photos must be under 25MB and documents under 30MB. Please choose a smaller file or compress the photo before uploading.',
+        error: 'That file is too large. Photos must be under 15MB, videos under 100MB, and documents under 30MB. Please choose a smaller file or compress it before uploading.',
       });
     }
     if (err.code === 'LIMIT_UNEXPECTED_FILE') {

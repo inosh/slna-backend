@@ -16,7 +16,8 @@ router.get('/', async (req, res) => {
       SELECT
         a.id, a.title, a.event_date, a.created_at,
         COUNT(ap.id) AS photo_count,
-        (SELECT photo_url FROM album_photos WHERE album_id = a.id ORDER BY display_order ASC LIMIT 1) AS cover_photo
+        (SELECT photo_url FROM album_photos WHERE album_id = a.id ORDER BY display_order ASC LIMIT 1) AS cover_photo,
+        (SELECT media_type FROM album_photos WHERE album_id = a.id ORDER BY display_order ASC LIMIT 1) AS cover_media_type
       FROM albums a
       LEFT JOIN album_photos ap ON ap.album_id = a.id
       GROUP BY a.id
@@ -70,8 +71,8 @@ router.post('/', requireAuth, uploadAlbumPhotos.array('photos', 40), async (req,
 
     const photoInsertPromises = req.files.map((file, index) =>
       client.query(
-        'INSERT INTO album_photos (album_id, photo_url, display_order) VALUES ($1, $2, $3)',
-        [album.id, `/uploads/albums/${file.filename}`, index]
+        'INSERT INTO album_photos (album_id, photo_url, media_type, display_order) VALUES ($1, $2, $3, $4)',
+        [album.id, `/uploads/albums/${file.filename}`, file.mimetype.startsWith('video/') ? 'video' : 'image', index]
       )
     );
     await Promise.all(photoInsertPromises);

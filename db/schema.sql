@@ -7,13 +7,15 @@ CREATE TABLE IF NOT EXISTS public.album_photos
     id serial NOT NULL,
     album_id integer NOT NULL,
     photo_url character varying(500) COLLATE pg_catalog."default" NOT NULL,
+    media_type character varying(10) NOT NULL DEFAULT 'image',
     display_order integer NOT NULL DEFAULT 0,
     created_at timestamp without time zone NOT NULL DEFAULT now(),
     CONSTRAINT album_photos_pkey PRIMARY KEY (id),
     CONSTRAINT album_photos_album_id_fkey FOREIGN KEY (album_id)
     REFERENCES public.albums (id) MATCH SIMPLE
                          ON UPDATE NO ACTION
-                         ON DELETE CASCADE
+                         ON DELETE CASCADE,
+    CONSTRAINT album_photos_media_type_check CHECK (media_type::text = ANY (ARRAY['image'::character varying, 'video'::character varying]::text[]))
     )
 
     TABLESPACE pg_default;
