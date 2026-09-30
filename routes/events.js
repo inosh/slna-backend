@@ -47,6 +47,16 @@ const CPD_EVENT_AUDIENCES = new Set([
   'Members Only'
 ]);
 
+// 'paid': both fees required as entered. 'free': both fees forced to 0
+// regardless of what the admin typed. 'free_for_members': member_fee is
+// forced to 0, non_member_fee is required (members register free,
+// non-members still pay).
+const CPD_EVENT_FEE_TYPES = new Set([
+  'paid',
+  'free',
+  'free_for_members'
+]);
+
 function eventUploadUrl(file) {
   return file ? '/uploads/events/' + file.filename : null;
 }
@@ -103,6 +113,7 @@ function normaliseCpdEvent(row) {
     summary: row.summary,
     status: row.status,
     audience: row.audience,
+    fee_type: row.fee_type || 'paid',
     member_fee: row.member_fee === null ? null : Number(row.member_fee),
     non_member_fee:
         row.non_member_fee === null ? null : Number(row.non_member_fee),
@@ -149,15 +160,40 @@ function validateCpdEventInput(body) {
     return 'Date must use YYYY-MM-DD format.';
   }
 
-  if (!isValidFee(body.member_fee)) {
+  const feeType = CPD_EVENT_FEE_TYPES.has(body.fee_type) ? body.fee_type : 'paid';
+
+  // A "Members Only" event never has a non-member fee to collect -- there's
+  // no such thing as a non-member registering for one.
+  const membersOnly = body.audience === 'Members Only';
+  const needsMemberFee = feeType === 'paid';
+  const needsNonMemberFee = !membersOnly && (feeType === 'paid' || feeType === 'free_for_members');
+
+  if (needsMemberFee && !isValidFee(body.member_fee)) {
     return 'Member Fee must be a valid amount of 0 or more.';
   }
 
-  if (!isValidFee(body.non_member_fee)) {
+  if (needsNonMemberFee && !isValidFee(body.non_member_fee)) {
     return 'Non-Member Fee must be a valid amount of 0 or more.';
   }
 
   return null;
+}
+
+// The client is never trusted to send the right fee amounts for a
+// non-"paid" fee type, or for the non-member fee on a "Members Only"
+// event -- the server decides what's actually stored based on fee_type
+// and audience alone, ignoring whatever member_fee/non_member_fee it
+// doesn't need.
+function resolveCpdFees(feeType, membersOnly, body) {
+  const member_fee = (feeType === 'free' || feeType === 'free_for_members')
+      ? 0
+      : Number(body.member_fee);
+
+  const non_member_fee = (feeType === 'free' || membersOnly)
+      ? 0
+      : Number(body.non_member_fee);
+
+  return { member_fee, non_member_fee };
 }
 
 // Create CPD event with optional photo and PDF attachment
@@ -175,6 +211,9 @@ router.post(
     const photoFile = req.files && req.files.photo && req.files.photo[0];
     const attachmentFile = req.files && req.files.attachment && req.files.attachment[0];
 
+    const feeType = CPD_EVENT_FEE_TYPES.has(req.body.fee_type) ? req.body.fee_type : 'paid';
+    const fees = resolveCpdFees(feeType, req.body.audience === 'Members Only', req.body);
+
     const sql = `
       INSERT INTO cpd_events (
         event_type,
@@ -185,6 +224,7 @@ router.post(
         summary,
         status,
         audience,
+        fee_type,
         member_fee,
         non_member_fee,
         photo_url,
@@ -193,7 +233,7 @@ router.post(
         attachment_filename,
         created_at,
         updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW())
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW())
       RETURNING *
     `;
 
@@ -206,8 +246,9 @@ router.post(
       req.body.summary.trim(),
       req.body.status.trim(),
       req.body.audience.trim(),
-      Number(req.body.member_fee),
-      Number(req.body.non_member_fee),
+      feeType,
+      fees.member_fee,
+      fees.non_member_fee,
       eventUploadUrl(photoFile),
       photoFile ? photoFile.originalname : null,
       attachmentUploadUrl(attachmentFile),
@@ -382,6 +423,9 @@ router.put(
           ? attachmentFile.originalname
           : existing.rows[0].attachment_filename;
 
+      const feeType = CPD_EVENT_FEE_TYPES.has(req.body.fee_type) ? req.body.fee_type : 'paid';
+      const fees = resolveCpdFees(feeType, req.body.audience === 'Members Only', req.body);
+
       const sql = `
         UPDATE cpd_events
         SET event_type = $1,
@@ -392,14 +436,15 @@ router.put(
             summary = $6,
             status = $7,
             audience = $8,
-            member_fee = $9,
-            non_member_fee = $10,
-            photo_url = $11,
-            photo_filename = $12,
-            attachment_url = $13,
-            attachment_filename = $14,
+            fee_type = $9,
+            member_fee = $10,
+            non_member_fee = $11,
+            photo_url = $12,
+            photo_filename = $13,
+            attachment_url = $14,
+            attachment_filename = $15,
             updated_at = NOW()
-        WHERE id = $15
+        WHERE id = $16
         RETURNING *
       `;
 
@@ -412,8 +457,9 @@ router.put(
         req.body.summary.trim(),
         req.body.status.trim(),
         req.body.audience.trim(),
-        Number(req.body.member_fee),
-        Number(req.body.non_member_fee),
+        feeType,
+        fees.member_fee,
+        fees.non_member_fee,
         photoUrl,
         photoFilename,
         attachmentUrl,
