@@ -179,6 +179,7 @@ CREATE TABLE IF NOT EXISTS public.cpd_events
     summary text COLLATE pg_catalog."default" NOT NULL,
     status text COLLATE pg_catalog."default" NOT NULL,
     audience text COLLATE pg_catalog."default" NOT NULL,
+    fee_type text COLLATE pg_catalog."default" NOT NULL DEFAULT 'paid'::text,
     member_fee numeric(10,2) NOT NULL DEFAULT 0,
     non_member_fee numeric(10,2) NOT NULL DEFAULT 0,
     photo_url text COLLATE pg_catalog."default",
@@ -189,6 +190,7 @@ CREATE TABLE IF NOT EXISTS public.cpd_events
     updated_at timestamp with time zone NOT NULL DEFAULT now(),
     CONSTRAINT cpd_events_pkey PRIMARY KEY (id),
     CONSTRAINT cpd_events_audience_check CHECK (audience = ANY (ARRAY['Open for Public'::text, 'Members Only'::text])),
+    CONSTRAINT cpd_events_fee_type_check CHECK (fee_type = ANY (ARRAY['paid'::text, 'free'::text, 'free_for_members'::text])),
     CONSTRAINT cpd_events_member_fee_check CHECK (member_fee >= 0),
     CONSTRAINT cpd_events_non_member_fee_check CHECK (non_member_fee >= 0)
     )
@@ -242,9 +244,9 @@ CREATE TABLE IF NOT EXISTS public.event_registrations
     postal_address text COLLATE pg_catalog."default" NOT NULL,
     workplace text COLLATE pg_catalog."default" NOT NULL,
     workplace_address text COLLATE pg_catalog."default" NOT NULL,
-    pay_by text COLLATE pg_catalog."default" NOT NULL,
-    receipt_url text COLLATE pg_catalog."default" NOT NULL,
-    receipt_filename text COLLATE pg_catalog."default" NOT NULL,
+    pay_by text COLLATE pg_catalog."default",
+    receipt_url text COLLATE pg_catalog."default",
+    receipt_filename text COLLATE pg_catalog."default",
     status text COLLATE pg_catalog."default" NOT NULL DEFAULT 'Pending',
     created_at timestamp with time zone NOT NULL DEFAULT now(),
     updated_at timestamp with time zone NOT NULL DEFAULT now(),

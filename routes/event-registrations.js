@@ -127,10 +127,10 @@ function normaliseRegistration(row) {
 async function findEvent(category, id) {
   const table = category === 'other' ? 'events' : 'cpd_events';
   const where = category === 'other' ? 'id = $1 AND category = \'other\'' : 'id = $1';
-  const feeColumns = category === 'other' ? '' : ', member_fee, non_member_fee';
+  const cpdColumns = category === 'other' ? '' : ', member_fee, non_member_fee, audience';
 
   const result = await db.query(
-    `SELECT id, title, event_date${feeColumns} FROM ${table} WHERE ${where}`,
+    `SELECT id, title, event_date${cpdColumns} FROM ${table} WHERE ${where}`,
     [id]
   );
 
@@ -147,9 +147,25 @@ function isValidAmount(value) {
   return Number.isFinite(parsed) && parsed >= 0;
 }
 
-function validateRegistrationInput(body) {
-  const category = body.event_category === 'other' ? 'other' : 'cpd';
+// A CPD event with fee_type 'free' (both fees 0) has nothing to pay for
+// anyone; 'free_for_members' has nothing to pay only for a Member
+// registrant (a Non-Member still pays the non_member_fee); and any "other"
+// category event has no fee columns at all, so it's always free. Whichever
+// case applies, pay_by / paid_amount / the receipt upload are all skipped
+// rather than required.
+function isFreeRegistration(category, event, registrantType) {
+  if (category !== 'cpd') {
+    return true;
+  }
 
+  const fee = registrantType === 'Member'
+      ? Number(event.member_fee)
+      : Number(event.non_member_fee);
+
+  return fee <= 0;
+}
+
+function validateRegistrationInput(body, isFree) {
   if (!body.event_id || !/^\d+$/.test(String(body.event_id))) {
     return { error: 'A valid event_id is required.' };
   }
@@ -164,9 +180,12 @@ function validateRegistrationInput(body) {
     'certificate_issue_name',
     'postal_address',
     'workplace',
-    'workplace_address',
-    'pay_by'
+    'workplace_address'
   ];
+
+  if (!isFree) {
+    required.push('pay_by');
+  }
 
   for (const field of required) {
     if (!String(body[field] || '').trim()) {
@@ -182,15 +201,17 @@ function validateRegistrationInput(body) {
     return { error: 'Membership Number is required for members.' };
   }
 
-  if (!PAY_BY_OPTIONS.has(body.pay_by)) {
-    return { error: 'pay_by must be "Organization" or "Individual".' };
+  if (!isFree) {
+    if (!PAY_BY_OPTIONS.has(body.pay_by)) {
+      return { error: 'pay_by must be "Organization" or "Individual".' };
+    }
+
+    if (!isValidAmount(body.paid_amount)) {
+      return { error: 'A valid paid_amount of 0 or more is required.' };
+    }
   }
 
-  if (!isValidAmount(body.paid_amount)) {
-    return { error: 'A valid paid_amount of 0 or more is required.' };
-  }
-
-  return { category };
+  return {};
 }
 
 // Submit an event registration with a bank receipt upload (PUBLIC)
@@ -198,24 +219,35 @@ router.post(
   '/',
   uploadEventPayment.single('receipt'),
   async function (req, res) {
-    const validation = validateRegistrationInput(req.body);
+    const category = req.body.event_category === 'other' ? 'other' : 'cpd';
 
-    if (validation.error) {
-      return res.status(400).json({ error: validation.error });
-    }
-
-    if (!req.file) {
-      return res.status(400).json({ error: 'A bank receipt file is required.' });
+    if (!req.body.event_id || !/^\d+$/.test(String(req.body.event_id))) {
+      return res.status(400).json({ error: 'A valid event_id is required.' });
     }
 
     try {
-      const event = await findEvent(validation.category, req.body.event_id);
+      const event = await findEvent(category, req.body.event_id);
 
       if (!event) {
         return res.status(404).json({ error: 'The event for this registration could not be found.' });
       }
 
-      if (validation.category === 'cpd') {
+      const isFree = isFreeRegistration(category, event, req.body.registrant_type);
+      const validation = validateRegistrationInput(req.body, isFree);
+
+      if (validation.error) {
+        return res.status(400).json({ error: validation.error });
+      }
+
+      if (category === 'cpd' && event.audience === 'Members Only' && req.body.registrant_type !== 'Member') {
+        return res.status(400).json({ error: 'This event is open to SLNA members only.' });
+      }
+
+      if (!isFree && !req.file) {
+        return res.status(400).json({ error: 'A bank receipt file is required.' });
+      }
+
+      if (!isFree && category === 'cpd') {
         const expectedFee = req.body.registrant_type === 'Member'
             ? Number(event.member_fee)
             : Number(event.non_member_fee);
@@ -261,12 +293,12 @@ router.post(
       `;
 
       const values = [
-        validation.category,
+        category,
         event.id,
         event.title,
         event.event_date,
         req.body.registrant_type.trim(),
-        Number(req.body.paid_amount),
+        isFree ? 0 : Number(req.body.paid_amount),
         req.body.registrant_type === 'Member' ? req.body.membership_number.trim() : null,
         req.body.nic.trim(),
         req.body.full_name.trim(),
@@ -277,9 +309,9 @@ router.post(
         req.body.postal_address.trim(),
         req.body.workplace.trim(),
         req.body.workplace_address.trim(),
-        req.body.pay_by.trim(),
-        receiptUploadUrl(req.file),
-        req.file.originalname
+        isFree ? null : req.body.pay_by.trim(),
+        isFree ? null : receiptUploadUrl(req.file),
+        isFree ? null : req.file.originalname
       ];
 
       const result = await db.query(sql, values);
