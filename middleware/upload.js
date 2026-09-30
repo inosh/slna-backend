@@ -44,10 +44,18 @@ function makeEventFileStorage(subfolder) {
   });
 }
 
+const IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'];
+const VIDEO_MIME_TYPES = ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo', 'video/ogg'];
+
 const imageFilter = (req, file, cb) => {
-  const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'];
-  if (allowed.includes(file.mimetype)) cb(null, true);
+  if (IMAGE_MIME_TYPES.includes(file.mimetype)) cb(null, true);
   else cb(new Error('Only image files (JPEG, PNG, WEBP, GIF, SVG) are allowed.'));
+};
+
+// Albums accept both photos and videos in the same "photos" field.
+const albumMediaFilter = (req, file, cb) => {
+  if (IMAGE_MIME_TYPES.includes(file.mimetype) || VIDEO_MIME_TYPES.includes(file.mimetype)) cb(null, true);
+  else cb(new Error('Only image (JPEG, PNG, WEBP, GIF, SVG) or video (MP4, WEBM, MOV, AVI, OGG) files are allowed.'));
 };
 
 const documentFilter = (req, file, cb) => {
@@ -68,31 +76,42 @@ const receiptFilter = (req, file, cb) => {
   else cb(new Error('Only PDF, JPEG, or PNG files are allowed for payment receipts.'));
 };
 
+// News create/update: "photo" (cover) stays image-only, while "photos"
+// (gallery, becomes a linked album) accepts photos and videos like the
+// standalone Gallery album uploads do.
+const newsPhotoFilter = (req, file, cb) => {
+  if (file.fieldname === 'photo') return imageFilter(req, file, cb);
+  if (file.fieldname === 'photos') return albumMediaFilter(req, file, cb);
+  cb(new Error('Unexpected upload field.'));
+};
+
 const uploadNewsPhoto = multer({
   storage: makeStorage('news'),
-  fileFilter: imageFilter,
-  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB max
+  fileFilter: newsPhotoFilter,
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB max (videos are much larger than photos)
 });
 
 // News create/update: the "document" field (typed .txt/.pdf/.docx) needs the
-// document filter, while "photo" (cover) and "photos" (gallery, becomes a
-// linked album) are images -- route each field to the right filter by name.
+// document filter, "photo" (cover) is image-only, and "photos" (gallery,
+// becomes a linked album) accepts photos and videos -- route each field to
+// the right filter by name.
 const newsUploadFilter = (req, file, cb) => {
   if (file.fieldname === 'document') return documentFilter(req, file, cb);
-  if (file.fieldname === 'photo' || file.fieldname === 'photos') return imageFilter(req, file, cb);
+  if (file.fieldname === 'photo') return imageFilter(req, file, cb);
+  if (file.fieldname === 'photos') return albumMediaFilter(req, file, cb);
   cb(new Error('Unexpected upload field.'));
 };
 
 const uploadNewsDocument = multer({
   storage: makeStorage('news'),
   fileFilter: newsUploadFilter,
-  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB max
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB max (videos are much larger than photos)
 });
 
 const uploadAlbumPhotos = multer({
   storage: makeStorage('albums'),
-  fileFilter: imageFilter,
-  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB max
+  fileFilter: albumMediaFilter,
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB max (videos are much larger than photos)
 });
 
 // Event photos (CPD and Other events)

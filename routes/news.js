@@ -35,8 +35,8 @@ async function createAlbumForNews(client, { title, event_date, files, createdBy 
 
   await Promise.all(files.map((file, index) =>
     client.query(
-      'INSERT INTO album_photos (album_id, photo_url, display_order) VALUES ($1, $2, $3)',
-      [albumId, `/uploads/news/${file.filename}`, index]
+      'INSERT INTO album_photos (album_id, photo_url, media_type, display_order) VALUES ($1, $2, $3, $4)',
+      [albumId, `/uploads/news/${file.filename}`, file.mimetype.startsWith('video/') ? 'video' : 'image', index]
     )
   ));
 
@@ -57,8 +57,8 @@ async function replaceAlbumPhotos(client, albumId, { title, event_date, files })
 
   await Promise.all(files.map((file, index) =>
     client.query(
-      'INSERT INTO album_photos (album_id, photo_url, display_order) VALUES ($1, $2, $3)',
-      [albumId, `/uploads/news/${file.filename}`, index]
+      'INSERT INTO album_photos (album_id, photo_url, media_type, display_order) VALUES ($1, $2, $3, $4)',
+      [albumId, `/uploads/news/${file.filename}`, file.mimetype.startsWith('video/') ? 'video' : 'image', index]
     )
   ));
 }
