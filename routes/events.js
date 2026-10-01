@@ -17,6 +17,7 @@ const CPD_EVENT_TYPES = new Set([
   'Seminar',
   'Study Day',
   'Conference',
+  'Educational Program',
   'Other'
 ]);
 
@@ -294,7 +295,7 @@ router.get('/cpd', async function (req, res) {
         WHERE er.event_category = 'cpd' AND er.event_id = cpd_events.id
       ) AS registration_count
     FROM cpd_events
-    ORDER BY event_date ASC, id DESC
+    ORDER BY event_date DESC, id DESC
   `;
 
   try {
@@ -650,7 +651,7 @@ router.get('/other', async function (req, res) {
       ) AS registration_count
     FROM events
     WHERE category = 'other'
-    ORDER BY event_date ASC, id DESC
+    ORDER BY event_date DESC, id DESC
   `;
 
   try {
