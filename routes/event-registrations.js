@@ -7,6 +7,9 @@ const router = express.Router();
 const db = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
 const { uploadEventPayment } = require('../middleware/upload');
+const { getPrivateObject, isNotFoundError } = require('../lib/r2');
+
+const RECEIPT_STORAGE_PREFIX = 'event-registrations/';
 
 const REGISTRANT_TYPES = new Set(['Member', 'Non-Member']);
 const PAY_BY_OPTIONS = new Set(['Organization', 'Individual']);
@@ -90,8 +93,11 @@ async function fetchRegistrationsForExport(category, eventId, status) {
   return rows;
 }
 
+// Receipts live in the private R2 bucket, so what gets stored is the bare
+// object key (not a public URL) -- served later through the authenticated
+// GET /:id/receipt route below.
 function receiptUploadUrl(file) {
-  return file ? '/uploads/events/payments/' + file.filename : null;
+  return file ? file.key : null;
 }
 
 function normaliseRegistration(row) {
@@ -554,6 +560,46 @@ router.patch('/:id/status', requireAuth, async function (req, res) {
   } catch (error) {
     console.error('Could not update registration status:', error);
     return res.status(500).json({ error: 'Could not update the registration status.' });
+  }
+});
+
+// Stream a registration's bank receipt from the private R2 bucket (admin only).
+router.get('/:id/receipt', requireAuth, async function (req, res, next) {
+  try {
+    const result = await db.query(
+      'SELECT receipt_url, receipt_filename FROM event_registrations WHERE id = $1',
+      [req.params.id]
+    );
+
+    if (!result.rows.length || !result.rows[0].receipt_url) {
+      return res.status(404).json({ error: 'Receipt not found.' });
+    }
+
+    const { receipt_url: storageKey, receipt_filename: filename } = result.rows[0];
+
+    if (!storageKey.startsWith(RECEIPT_STORAGE_PREFIX) || storageKey.includes('..')) {
+      return res.status(400).json({ error: 'Invalid stored receipt path.' });
+    }
+
+    let object;
+    try {
+      object = await getPrivateObject(storageKey);
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        return res.status(404).json({ error: 'The receipt file could not be found.' });
+      }
+      throw error;
+    }
+
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    if (object.ContentType) res.setHeader('Content-Type', object.ContentType);
+    res.setHeader('Content-Disposition', 'inline; filename="' + (filename || 'receipt') + '"');
+
+    return object.Body.pipe(res);
+  } catch (error) {
+    console.error('Could not load registration receipt:', error);
+    return next(error);
   }
 });
 

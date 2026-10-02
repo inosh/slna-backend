@@ -3,10 +3,10 @@
 // all visitors. Write routes (POST, DELETE) require a valid login.
 
 const express = require('express');
-const fs = require('fs');
 const pool = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
 const { uploadNewsPhoto, uploadNewsDocument } = require('../middleware/upload');
+const { getPublicObject, objectBodyToString } = require('../lib/r2');
 
 const router = express.Router();
 
@@ -36,7 +36,7 @@ async function createAlbumForNews(client, { title, event_date, files, createdBy 
   await Promise.all(files.map((file, index) =>
     client.query(
       'INSERT INTO album_photos (album_id, photo_url, media_type, display_order) VALUES ($1, $2, $3, $4)',
-      [albumId, `/uploads/news/${file.filename}`, file.mimetype.startsWith('video/') ? 'video' : 'image', index]
+      [albumId, `/uploads/${file.key}`, file.mimetype.startsWith('video/') ? 'video' : 'image', index]
     )
   ));
 
@@ -58,7 +58,7 @@ async function replaceAlbumPhotos(client, albumId, { title, event_date, files })
   await Promise.all(files.map((file, index) =>
     client.query(
       'INSERT INTO album_photos (album_id, photo_url, media_type, display_order) VALUES ($1, $2, $3, $4)',
-      [albumId, `/uploads/news/${file.filename}`, file.mimetype.startsWith('video/') ? 'video' : 'image', index]
+      [albumId, `/uploads/${file.key}`, file.mimetype.startsWith('video/') ? 'video' : 'image', index]
     )
   ));
 }
@@ -118,7 +118,7 @@ router.post(
 
     const coverFile = req.files && req.files['photo'] ? req.files['photo'][0] : null;
     const galleryFiles = req.files && req.files['photos'] ? req.files['photos'] : [];
-    const photoUrl = coverFile ? `/uploads/news/${coverFile.filename}` : null;
+    const photoUrl = coverFile ? `/uploads/${coverFile.key}` : null;
 
     const client = await pool.connect();
     try {
@@ -175,7 +175,8 @@ router.post(
     // For .pdf/.docx, the file is stored as an attachment and the body is whatever was typed manually.
     if (documentFile.mimetype === 'text/plain') {
       try {
-        body = fs.readFileSync(documentFile.path, 'utf-8');
+        const object = await getPublicObject(documentFile.key);
+        body = await objectBodyToString(object);
       } catch (e) {
         console.warn('Could not read .txt file contents:', e.message);
       }
@@ -184,7 +185,7 @@ router.post(
       body = `Attached document: ${documentFile.originalname}`;
     }
 
-    const photoUrl = photoFile ? `/uploads/news/${photoFile.filename}` : null;
+    const photoUrl = photoFile ? `/uploads/${photoFile.key}` : null;
 
     const client = await pool.connect();
     try {
@@ -258,7 +259,7 @@ router.put(
       }
       const existing = existingResult.rows[0];
 
-      const photoUrl = coverFile ? `/uploads/news/${coverFile.filename}` : existing.photo_url;
+      const photoUrl = coverFile ? `/uploads/${coverFile.key}` : existing.photo_url;
 
       let albumId = existing.album_id;
       if (overrideAlbum) {

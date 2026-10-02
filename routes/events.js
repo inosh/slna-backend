@@ -1,7 +1,5 @@
 // routes/events.js
 const express = require('express');
-const path = require('path');
-const fs = require('fs');
 const router = express.Router();
 const db = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
@@ -9,6 +7,7 @@ const {
   uploadEventPhoto,
   uploadCpdEventFiles
 } = require('../middleware/upload');
+const { getPublicObject, renamePublicObject, isNotFoundError } = require('../lib/r2');
 
 const CPD_EVENT_TYPES = new Set([
   'Workshop',
@@ -59,29 +58,33 @@ const CPD_EVENT_FEE_TYPES = new Set([
 ]);
 
 function eventUploadUrl(file) {
-  return file ? '/uploads/events/' + file.filename : null;
+  return file ? '/uploads/' + file.key : null;
 }
 
 function attachmentUploadUrl(file) {
-  return file ? '/uploads/events/attachements/' + file.filename : null;
+  return file ? '/uploads/' + file.key : null;
 }
 
-// The attachment's filename is built before the event has a real id (see
+// The attachment's key is built before the event has a real id (see
 // uploadCpdEventFiles), so once a CREATE gets its new id back from the
-// database, swap the "new" placeholder in the stored filename for it.
-function renameAttachmentForNewEvent(file, eventId) {
-  const currentName = path.basename(file.path);
+// database, swap the "new" placeholder in the stored key for it. R2 has no
+// rename, so this copies the object to the new key and drops the old one.
+async function renameAttachmentForNewEvent(file, eventId) {
+  const currentKey = file.key;
+  const lastSlash = currentKey.lastIndexOf('/');
+  const prefix = currentKey.slice(0, lastSlash + 1);
+  const currentName = currentKey.slice(lastSlash + 1);
   const updatedName = currentName.replace(/^(\d+)-new-/, `$1-${eventId}-`);
 
   if (updatedName === currentName) {
     return { url: attachmentUploadUrl(file), filename: file.originalname };
   }
 
-  const updatedPath = path.join(path.dirname(file.path), updatedName);
-  fs.renameSync(file.path, updatedPath);
+  const updatedKey = prefix + updatedName;
+  await renamePublicObject(currentKey, updatedKey);
 
   return {
-    url: '/uploads/events/attachements/' + updatedName,
+    url: '/uploads/' + updatedKey,
     filename: file.originalname
   };
 }
@@ -265,7 +268,7 @@ router.post(
       let row = result.rows[0];
 
       if (attachmentFile) {
-        const renamed = renameAttachmentForNewEvent(attachmentFile, row.id);
+        const renamed = await renameAttachmentForNewEvent(attachmentFile, row.id);
 
         const updateResult = await db.query(
           'UPDATE cpd_events SET attachment_url = $1 WHERE id = $2 RETURNING *',
@@ -338,13 +341,22 @@ router.get('/cpd/:id/attachment', async function (req, res) {
     }
 
     const { attachment_url: attachmentUrl, attachment_filename: attachmentFilename } = result.rows[0];
-    const filePath = path.join(__dirname, '..', attachmentUrl.replace(/^\/+/, ''));
+    const key = attachmentUrl.replace(/^\/uploads\//, '');
 
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'Attachment file not found.' });
+    let object;
+    try {
+      object = await getPublicObject(key);
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        return res.status(404).json({ error: 'Attachment file not found.' });
+      }
+      throw error;
     }
 
-    return res.download(filePath, attachmentFilename || path.basename(filePath));
+    const filename = attachmentFilename || key.split('/').pop();
+    if (object.ContentType) res.setHeader('Content-Type', object.ContentType);
+    res.setHeader('Content-Disposition', 'attachment; filename="' + filename + '"');
+    return object.Body.pipe(res);
   } catch (error) {
     console.error('Could not download CPD event attachment:', error);
     return res.status(500).json({ error: 'Could not download the attachment.' });

@@ -4,9 +4,10 @@
 
 const express = require('express');
 const cors = require('cors');
-const path = require('path');
 const multer = require('multer');
 require('dotenv').config();
+
+const { publicUrlForKey } = require('./lib/r2');
 
 const authRoutes = require('./routes/auth');
 const newsRoutes = require('./routes/news');
@@ -26,7 +27,14 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Public files now live in the R2 public bucket. Old/existing links still
+// point at /uploads/<key> (e.g. /uploads/albums/123.jpg, built from DB
+// values that were never rewritten), so redirect those straight to R2
+// instead of serving from local disk.
+app.get('/uploads/*', (req, res) => {
+  const key = req.path.replace(/^\/uploads\//, '');
+  res.redirect(302, publicUrlForKey(key));
+});
 
 // --- Routes ---
 app.use('/api/auth', authRoutes);
