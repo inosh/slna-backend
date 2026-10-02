@@ -1,24 +1,61 @@
 // middleware/upload.js
 // Configures Multer to handle file uploads (photos and documents),
-// saving them to local disk under /uploads. When you move to
-// production, this is the only file you'll need to change to
-// upload to Cloudflare R2 or S3 instead.
+// streaming them straight to Cloudflare R2 instead of local disk -- the
+// public bucket for most uploads, the private bucket for anything
+// sensitive (currently just event registration payment receipts). Each
+// multer file ends up with a `.key` property (the R2 object key, e.g.
+// "albums/1699999999-photo.jpg") in place of the old `.filename`. Public
+// files are stored as `/uploads/${file.key}`; private ones store the bare
+// key directly and are served through an authenticated proxy route.
 
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
+const { Upload } = require('@aws-sdk/lib-storage');
+const { s3, PUBLIC_BUCKET, PRIVATE_BUCKET, deleteObject } = require('../lib/r2');
+
+// Minimal multer StorageEngine that uploads the incoming file stream
+// directly to R2 (via a multipart upload for large files, e.g. gallery
+// videos) instead of writing to a local directory. Works against either
+// bucket -- most uploads are public, but e.g. event registration payment
+// receipts go to the private bucket.
+class R2Storage {
+  constructor(bucket, keyFn) {
+    this.bucket = bucket;
+    this.keyFn = keyFn;
+  }
+
+  _handleFile(req, file, callback) {
+    const key = this.keyFn(req, file);
+
+    const upload = new Upload({
+      client: s3,
+      params: {
+        Bucket: this.bucket,
+        Key: key,
+        Body: file.stream,
+        ContentType: file.mimetype,
+      },
+    });
+
+    upload.done()
+      .then((result) => {
+        callback(null, { key, size: result.ContentLength });
+      })
+      .catch(callback);
+  }
+
+  _removeFile(req, file, callback) {
+    deleteObject(this.bucket, file.key).then(() => callback(null)).catch(callback);
+  }
+}
+
+function safeName(originalname) {
+  return originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+}
 
 function makeStorage(subfolder) {
-  const dir = path.join(__dirname, '..', 'uploads', subfolder);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-  return multer.diskStorage({
-    destination: (req, file, cb) => cb(null, dir),
-    filename: (req, file, cb) => {
-      const timestamp = Date.now();
-      const safeName = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-      cb(null, `${timestamp}-${safeName}`);
-    },
+  return new R2Storage(PUBLIC_BUCKET, (req, file) => {
+    const timestamp = Date.now();
+    return `${subfolder}/${timestamp}-${safeName(file.originalname)}`;
   });
 }
 
@@ -28,19 +65,12 @@ function makeStorage(subfolder) {
 // form field for standalone uploads like registration receipts (that route
 // has no :id param). Requires the id/date text fields to be sent before
 // the file field in the multipart body, since multer parses in order.
-function makeEventFileStorage(subfolder) {
-  const dir = path.join(__dirname, '..', 'uploads', subfolder);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-  return multer.diskStorage({
-    destination: (req, file, cb) => cb(null, dir),
-    filename: (req, file, cb) => {
-      const timestamp = Date.now();
-      const eventId = req.params.id || req.body.event_id || 'new';
-      const eventDate = String(req.body.event_date || 'unknown-date').slice(0, 10);
-      const safeName = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-      cb(null, `${timestamp}-${eventId}-${eventDate}-${safeName}`);
-    },
+function makeEventFileStorage(subfolder, bucket = PUBLIC_BUCKET) {
+  return new R2Storage(bucket, (req, file) => {
+    const timestamp = Date.now();
+    const eventId = req.params.id || req.body.event_id || 'new';
+    const eventDate = String(req.body.event_date || 'unknown-date').slice(0, 10);
+    return `${subfolder}/${timestamp}-${eventId}-${eventDate}-${safeName(file.originalname)}`;
   });
 }
 
@@ -122,27 +152,18 @@ const uploadEventPhoto = multer({
 });
 
 // CPD event create/update: handles the optional "photo" (image) and
-// "attachment" (PDF) fields together, routing each to its own folder and
-// filename convention based on which field it arrived as.
-const cpdEventFilesStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const subfolder = file.fieldname === 'attachment' ? 'events/attachements' : 'events';
-    const dir = path.join(__dirname, '..', 'uploads', subfolder);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename: (req, file, cb) => {
-    const timestamp = Date.now();
-    const safeName = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+// "attachment" (PDF) fields together, routing each to its own key prefix
+// and filename convention based on which field it arrived as.
+const cpdEventFilesStorage = new R2Storage(PUBLIC_BUCKET, (req, file) => {
+  const timestamp = Date.now();
 
-    if (file.fieldname === 'attachment') {
-      const eventId = req.params.id || 'new';
-      const eventDate = String(req.body.event_date || 'unknown-date').slice(0, 10);
-      return cb(null, `${timestamp}-${eventId}-${eventDate}-${safeName}`);
-    }
+  if (file.fieldname === 'attachment') {
+    const eventId = req.params.id || 'new';
+    const eventDate = String(req.body.event_date || 'unknown-date').slice(0, 10);
+    return `events/attachements/${timestamp}-${eventId}-${eventDate}-${safeName(file.originalname)}`;
+  }
 
-    cb(null, `${timestamp}-${safeName}`);
-  },
+  return `events/${timestamp}-${safeName(file.originalname)}`;
 });
 
 const uploadCpdEventFiles = multer({
@@ -158,9 +179,10 @@ const uploadCpdEventFiles = multer({
   { name: 'attachment', maxCount: 1 }
 ]);
 
-// CPD event registration payment receipts
+// CPD event registration payment receipts -- these contain bank/payment
+// details, so they go to the private bucket, not the public one.
 const uploadEventPayment = multer({
-  storage: makeEventFileStorage('events/payments'),
+  storage: makeEventFileStorage('event-registrations', PRIVATE_BUCKET),
   fileFilter: receiptFilter,
   limits: { fileSize: 15 * 1024 * 1024 }, // 15MB max
 });

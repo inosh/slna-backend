@@ -6,6 +6,7 @@ const express = require('express');
 const pool = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
 const { uploadAlbumPhotos } = require('../middleware/upload');
+const { deletePublicObject } = require('../lib/r2');
 
 const router = express.Router();
 
@@ -72,7 +73,7 @@ router.post('/', requireAuth, uploadAlbumPhotos.array('photos', 40), async (req,
     const photoInsertPromises = req.files.map((file, index) =>
       client.query(
         'INSERT INTO album_photos (album_id, photo_url, media_type, display_order) VALUES ($1, $2, $3, $4)',
-        [album.id, `/uploads/albums/${file.filename}`, file.mimetype.startsWith('video/') ? 'video' : 'image', index]
+        [album.id, `/uploads/${file.key}`, file.mimetype.startsWith('video/') ? 'video' : 'image', index]
       )
     );
     await Promise.all(photoInsertPromises);
@@ -114,13 +115,27 @@ router.patch('/:id', requireAuth, async (req, res) => {
 });
 
 // DELETE /api/albums/:id - remove an album and all its photos (PROTECTED)
-// album_photos rows are removed automatically via ON DELETE CASCADE.
+// album_photos rows are removed automatically via ON DELETE CASCADE; the
+// underlying R2 objects are not, so they're cleaned up explicitly here.
 router.delete('/:id', requireAuth, async (req, res) => {
   try {
+    const photosResult = await pool.query(
+      'SELECT photo_url FROM album_photos WHERE album_id = $1',
+      [req.params.id]
+    );
+
     const result = await pool.query('DELETE FROM albums WHERE id = $1 RETURNING *', [req.params.id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Album not found.' });
     }
+
+    await Promise.all(photosResult.rows.map((row) => {
+      const key = row.photo_url.replace(/^\/uploads\//, '');
+      return deletePublicObject(key).catch((deleteErr) => {
+        console.error('Could not delete R2 object for album photo:', key, deleteErr.message);
+      });
+    }));
+
     res.json({ message: 'Album deleted.', deleted: result.rows[0] });
   } catch (err) {
     console.error('Error deleting album:', err);

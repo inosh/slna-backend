@@ -1,6 +1,5 @@
 const express = require('express');
 const crypto = require('crypto');
-const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const PDFDocument = require('pdfkit');
@@ -8,19 +7,16 @@ const PDFDocument = require('pdfkit');
 const pool = require('../db/pool');
 
 const { requireAuth } = require('../middleware/auth');
+const {
+    putPrivateObject,
+    getPrivateObject,
+    deletePrivateObject,
+    isNotFoundError
+} = require('../lib/r2');
 
 const router = express.Router();
 
-const PRIVATE_UPLOADS_ROOT = path.join(
-    __dirname,
-    '..',
-    'private-uploads'
-);
-
-const PRIVATE_UPLOAD_ROOT = path.join(
-    PRIVATE_UPLOADS_ROOT,
-    'membership-applications'
-);
+const PRIVATE_STORAGE_PREFIX = 'membership-applications/';
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 
@@ -36,13 +32,6 @@ const allowedMimeTypes = {
         'image/png'
     ]
 };
-
-function ensureUploadDirectory() {
-    fs.mkdirSync(PRIVATE_UPLOAD_ROOT, {
-        recursive: true,
-        mode: 0o750
-    });
-}
 
 function cleanText(value) {
     return typeof value === 'string'
@@ -246,27 +235,26 @@ function makeStoredFilename(file) {
 }
 
 function privateStorageKey(file) {
-    return `membership-applications/${file.filename}`;
+    return `${PRIVATE_STORAGE_PREFIX}${makeStoredFilename(file)}`;
 }
 
 function normaliseReferenceNumber(value) {
     return cleanText(value).toUpperCase();
 }
 
-function getPrivateFilePath(storageKey) {
+// Validates that a storage key read back from the database is actually one
+// of ours before we use it to fetch from R2 (defense in depth -- a key
+// containing ".." or missing our fixed prefix is rejected).
+function validatePrivateStorageKey(storageKey) {
     if (!storageKey || typeof storageKey !== 'string') {
         return null;
     }
 
-    const privateRoot = path.resolve(PRIVATE_UPLOADS_ROOT);
-    const filePath = path.resolve(privateRoot, storageKey);
-
-    // Prevent path traversal such as ../../.env.
-    if (!filePath.startsWith(privateRoot + path.sep)) {
+    if (!storageKey.startsWith(PRIVATE_STORAGE_PREFIX) || storageKey.includes('..')) {
         return null;
     }
 
-    return filePath;
+    return storageKey;
 }
 
 function applicationToAdminJson(application) {
@@ -335,19 +323,8 @@ function applicationToAdminJson(application) {
     };
 }
 
-const storage = multer.diskStorage({
-    destination: function (req, file, callback) {
-        ensureUploadDirectory();
-        callback(null, PRIVATE_UPLOAD_ROOT);
-    },
-
-    filename: function (req, file, callback) {
-        callback(null, makeStoredFilename(file));
-    }
-});
-
 const upload = multer({
-    storage,
+    storage: multer.memoryStorage(),
 
     limits: {
         fileSize: MAX_FILE_SIZE,
@@ -383,8 +360,8 @@ function deleteUploadedFiles(files) {
     Object.values(files)
         .flat()
         .forEach(function (file) {
-            if (file && file.path) {
-                fs.unlink(file.path, function () {});
+            if (file && file.key) {
+                deletePrivateObject(file.key).catch(function () {});
             }
         });
 }
@@ -549,6 +526,12 @@ router.post(
             const receipt = req.files.paymentReceipt[0];
             const photo = req.files.idPhoto[0];
 
+            receipt.key = privateStorageKey(receipt);
+            photo.key = privateStorageKey(photo);
+
+            await putPrivateObject(receipt.key, receipt.buffer, receipt.mimetype);
+            await putPrivateObject(photo.key, photo.buffer, photo.mimetype);
+
             const result = await pool.query(
                 `
                     INSERT INTO membership_applications (
@@ -646,10 +629,10 @@ router.post(
                     cleanText(req.body.paymentReference) || null,
                     safeDate(req.body.transferDate),
 
-                    privateStorageKey(receipt),
+                    receipt.key,
                     receipt.originalname,
 
-                    privateStorageKey(photo),
+                    photo.key,
                     photo.originalname
                 ]
             );
@@ -1573,23 +1556,29 @@ router.get(
                 });
             }
 
-            const photoPath = getPrivateFilePath(
+            const photoKey = validatePrivateStorageKey(
                 application.id_photo_path
             );
 
-            if (!photoPath) {
+            if (!photoKey) {
                 return res.status(400).json({
                     success: false,
                     message: 'Invalid stored photograph path.'
                 });
             }
 
-            if (!fs.existsSync(photoPath)) {
-                return res.status(404).json({
-                    success: false,
-                    message:
-                        'The passport photograph file could not be found.'
-                });
+            let object;
+            try {
+                object = await getPrivateObject(photoKey);
+            } catch (error) {
+                if (isNotFoundError(error)) {
+                    return res.status(404).json({
+                        success: false,
+                        message:
+                            'The passport photograph file could not be found.'
+                    });
+                }
+                throw error;
             }
 
             const filename = createIdPhotoFilename(
@@ -1607,15 +1596,16 @@ router.get(
                 'nosniff'
             );
 
-            return res.download(
-                photoPath,
-                filename,
-                function (error) {
-                    if (error && !res.headersSent) {
-                        return next(error);
-                    }
-                }
+            if (object.ContentType) {
+                res.setHeader('Content-Type', object.ContentType);
+            }
+
+            res.setHeader(
+                'Content-Disposition',
+                'attachment; filename="' + filename + '"'
             );
+
+            return object.Body.pipe(res);
         } catch (error) {
             return next(error);
         }
@@ -1805,23 +1795,29 @@ router.get(
                 });
             }
 
-            const filePath = getPrivateFilePath(
+            const storageKey = validatePrivateStorageKey(
                 document.storage_key
             );
 
-            if (!filePath) {
+            if (!storageKey) {
                 return res.status(400).json({
                     success: false,
                     message: 'Invalid stored document path.'
                 });
             }
 
-            if (!fs.existsSync(filePath)) {
-                return res.status(404).json({
-                    success: false,
-                    message:
-                        'The requested document file could not be found.'
-                });
+            let object;
+            try {
+                object = await getPrivateObject(storageKey);
+            } catch (error) {
+                if (isNotFoundError(error)) {
+                    return res.status(404).json({
+                        success: false,
+                        message:
+                            'The requested document file could not be found.'
+                    });
+                }
+                throw error;
             }
 
             res.setHeader(
@@ -1834,16 +1830,18 @@ router.get(
                 'nosniff'
             );
 
-            return res.sendFile(filePath, {
-                headers: {
-                    'Content-Disposition':
-                        'inline; filename="' +
-                        safeOriginalFilename(
-                            document.original_name
-                        ) +
-                        '"'
-                }
-            });
+            if (object.ContentType) {
+                res.setHeader('Content-Type', object.ContentType);
+            }
+
+            res.setHeader(
+                'Content-Disposition',
+                'inline; filename="' +
+                    safeOriginalFilename(document.original_name) +
+                    '"'
+            );
+
+            return object.Body.pipe(res);
         } catch (error) {
             return next(error);
         }
