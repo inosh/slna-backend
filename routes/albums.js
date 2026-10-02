@@ -88,6 +88,31 @@ router.post('/', requireAuth, uploadAlbumPhotos.array('photos', 40), async (req,
   }
 });
 
+// PATCH /api/albums/:id - rename an album's title only (PROTECTED)
+router.patch('/:id', requireAuth, async (req, res) => {
+  const title = String(req.body.title || '').trim();
+
+  if (!title) {
+    return res.status(400).json({ error: 'Album title is required.' });
+  }
+
+  try {
+    const result = await pool.query(
+      'UPDATE albums SET title = $1 WHERE id = $2 RETURNING *',
+      [title, req.params.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Album not found.' });
+    }
+
+    res.json({ message: 'Album updated.', album: result.rows[0] });
+  } catch (err) {
+    console.error('Error updating album:', err);
+    res.status(500).json({ error: 'Failed to update album.' });
+  }
+});
+
 // DELETE /api/albums/:id - remove an album and all its photos (PROTECTED)
 // album_photos rows are removed automatically via ON DELETE CASCADE.
 router.delete('/:id', requireAuth, async (req, res) => {
