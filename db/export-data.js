@@ -3,7 +3,7 @@
 // out as plain INSERT statements (plus sequence resets) to
 // db/data-export.sql, so that file can be run against the new Railway
 // database to carry over existing data. Safe to re-run -- it only reads
-// from the local DB and overwrites the output file.
+// from the local DB and overwrites the output file
 //
 // Run with: node db/export-data.js
 
