@@ -362,6 +362,28 @@ router.get('/', requireAuth, async function (req, res) {
   }
 });
 
+// GET /api/event-registrations/counts?category=cpd
+// Per-event registration counts for the admin summary table, without
+// pulling every registration row just to display how many there are.
+router.get('/counts', requireAuth, async function (req, res) {
+  const category = req.query.category === 'other' ? 'other' : 'cpd';
+
+  const sql = `
+    SELECT event_id, COUNT(*)::int AS count
+    FROM event_registrations
+    WHERE event_category = $1
+    GROUP BY event_id
+  `;
+
+  try {
+    const result = await db.query(sql, [category]);
+    return res.json(result.rows);
+  } catch (error) {
+    console.error('Could not load registration counts:', error);
+    return res.status(500).json({ error: 'Could not load registration counts.' });
+  }
+});
+
 // Export registrations for an event as a PDF table (admin)
 router.get('/export/pdf', requireAuth, async function (req, res) {
   const category = req.query.category === 'other' ? 'other' : 'cpd';
