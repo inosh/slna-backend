@@ -269,6 +269,7 @@ CREATE TABLE IF NOT EXISTS public.event_registrations
     receipt_url text COLLATE pg_catalog."default",
     receipt_filename text COLLATE pg_catalog."default",
     status text COLLATE pg_catalog."default" NOT NULL DEFAULT 'Pending',
+    rejection_reason text COLLATE pg_catalog."default",
     created_at timestamp with time zone NOT NULL DEFAULT now(),
     updated_at timestamp with time zone NOT NULL DEFAULT now(),
     CONSTRAINT event_registrations_pkey PRIMARY KEY (id),

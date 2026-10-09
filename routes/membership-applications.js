@@ -13,6 +13,7 @@ const {
     deletePrivateObject,
     isNotFoundError
 } = require('../lib/r2');
+const { sendMail, SECRETARY_EMAIL, ADMIN_LOGIN_URL, CONTACT_LINE } = require('../lib/mail');
 
 const router = express.Router();
 
@@ -404,6 +405,109 @@ async function createUniqueReferenceNumber() {
     );
 }
 
+function sendApplicationReceivedEmail(application) {
+    const fullName = cleanText(application.fullName);
+    const referenceNumber = application.referenceNumber;
+
+    return sendMail({
+        to: application.emailAddress,
+        subject: `SLNA Membership Application Received - ${referenceNumber}`,
+        text:
+            `Dear ${fullName},\n\n` +
+            'Thank you for applying for SLNA lifetime membership. ' +
+            'Your application has been received and is awaiting review.\n\n' +
+            `Reference number: ${referenceNumber}\n\n` +
+            'Please save this reference number -- you will need it to check ' +
+            'your application status from the "Check Status" tab on the ' +
+            'SLNA membership page.\n\n' +
+            'Regards,\nSLNA'
+    });
+}
+
+function sendSecretaryNewApplicationEmail(application) {
+    if (!SECRETARY_EMAIL) {
+        return Promise.resolve({ sent: false });
+    }
+
+    return sendMail({
+        to: SECRETARY_EMAIL,
+        subject: `New SLNA Lifetime Membership Application - ${application.referenceNumber}`,
+        text:
+            'A new lifetime membership application was submitted.\n\n' +
+            `Applicant: ${application.fullName}\n` +
+            `Email: ${application.emailAddress}\n` +
+            `Reference number: ${application.referenceNumber}\n\n` +
+            'Please log in to the staff admin dashboard to review this ' +
+            `application:\n${ADMIN_LOGIN_URL}\n\n` +
+            'Regards,\nSLNA Website'
+    });
+}
+
+function sendApplicationApprovedEmail(application) {
+    const fullName = cleanText(application.fullName);
+
+    return sendMail({
+        to: application.emailAddress,
+        subject: `SLNA Lifetime Membership Approved - ${application.referenceNumber}`,
+        text:
+            `Dear ${fullName},\n\n` +
+            'Congratulations! Your SLNA lifetime membership application ' +
+            '(reference ' + application.referenceNumber + ') has been approved.\n\n' +
+            `Your membership number: ${application.membershipNumber}\n\n` +
+            'Please keep this membership number for your records.\n\n' +
+            'Regards,\nSLNA'
+    });
+}
+
+function sendSecretaryApplicationApprovedEmail(application) {
+    if (!SECRETARY_EMAIL) {
+        return Promise.resolve({ sent: false });
+    }
+
+    return sendMail({
+        to: SECRETARY_EMAIL,
+        subject: `Membership Application Approved - ${application.referenceNumber}`,
+        text:
+            'A lifetime membership application was approved.\n\n' +
+            `Applicant: ${application.fullName}\n` +
+            `Email: ${application.emailAddress}\n` +
+            `Reference number: ${application.referenceNumber}\n` +
+            `Membership number assigned: ${application.membershipNumber}\n\n` +
+            'Regards,\nSLNA Website'
+    });
+}
+
+// Covers both "more_information_required" and "rejected" -- the wording
+// mirrors the message shown on the public application status-check page.
+function sendApplicationDecisionEmail(application) {
+    const fullName = cleanText(application.fullName);
+    const isRejected = application.applicationStatus === 'rejected';
+
+    const subject = isRejected
+        ? `SLNA Lifetime Membership Application Rejected - ${application.referenceNumber}`
+        : `More Information Required for Your SLNA Membership Application - ${application.referenceNumber}`;
+
+    const resubmitNote = isRejected
+        ? 'If you wish to apply again, please submit a new lifetime ' +
+            'membership application after addressing the feedback above.'
+        : 'Please submit a new lifetime membership application after ' +
+            'addressing the feedback above.';
+
+    return sendMail({
+        to: application.emailAddress,
+        subject,
+        text:
+            `Dear ${fullName},\n\n` +
+            `Your SLNA lifetime membership application (reference ${application.referenceNumber}) ` +
+            (isRejected ? 'has been rejected.' : 'requires more information.') +
+            '\n\n' +
+            `${application.statusNote || ''}\n\n` +
+            `${resubmitNote}\n\n` +
+            `${CONTACT_LINE}\n\n` +
+            'Regards,\nSLNA'
+    });
+}
+
 function validationError(message, details) {
     const error = new Error(message);
 
@@ -636,6 +740,15 @@ router.post(
                     photo.originalname
                 ]
             );
+
+            const emailApplication = {
+                fullName: cleanText(req.body.fullName),
+                emailAddress: cleanText(req.body.emailAddress).toLowerCase(),
+                referenceNumber: result.rows[0].reference_number
+            };
+
+            sendApplicationReceivedEmail(emailApplication);
+            sendSecretaryNewApplicationEmail(emailApplication);
 
             return res.status(201).json({
                 success: true,
@@ -941,6 +1054,24 @@ router.patch(
                     referenceNumber
                 ]
             );
+
+            const updatedApplication = result.rows[0];
+
+            const decisionEmailApplication = {
+                fullName: updatedApplication.full_name,
+                emailAddress: updatedApplication.email_address,
+                referenceNumber: updatedApplication.reference_number,
+                membershipNumber: updatedApplication.membership_number,
+                statusNote: updatedApplication.status_note,
+                applicationStatus: updatedApplication.application_status
+            };
+
+            if (status === 'approved') {
+                sendApplicationApprovedEmail(decisionEmailApplication);
+                sendSecretaryApplicationApprovedEmail(decisionEmailApplication);
+            } else if (status === 'more_information_required' || status === 'rejected') {
+                sendApplicationDecisionEmail(decisionEmailApplication);
+            }
 
             return res.json({
                 success: true,

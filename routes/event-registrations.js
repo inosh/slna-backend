@@ -8,6 +8,7 @@ const db = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
 const { uploadEventPayment } = require('../middleware/upload');
 const { getPrivateObject, isNotFoundError } = require('../lib/r2');
+const { sendMail, SECRETARY_EMAIL, ADMIN_LOGIN_URL, CONTACT_LINE } = require('../lib/mail');
 
 const RECEIPT_STORAGE_PREFIX = 'event-registrations/';
 
@@ -125,6 +126,7 @@ function normaliseRegistration(row) {
     receipt_url: row.receipt_url,
     receipt_filename: row.receipt_filename,
     status: row.status,
+    rejection_reason: row.rejection_reason,
     created_at: row.created_at,
     updated_at: row.updated_at
   };
@@ -218,6 +220,82 @@ function validateRegistrationInput(body, isFree) {
   }
 
   return {};
+}
+
+function formatRegistrationEventDate(value) {
+  if (!value) return '';
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+
+  return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' });
+}
+
+function sendRegistrationReceivedEmail(registration) {
+  return sendMail({
+    to: registration.email,
+    subject: `SLNA Event Registration Received - ${registration.event_title}`,
+    text:
+        `Dear ${registration.full_name},\n\n` +
+        `Thank you for registering for "${registration.event_title}"` +
+        (registration.event_date ? ` on ${formatRegistrationEventDate(registration.event_date)}` : '') +
+        '.\n\n' +
+        'Your registration has been received and is awaiting confirmation ' +
+        'by the SLNA office' +
+        (registration.paid_amount > 0 ? ' (including verification of your payment receipt)' : '') +
+        '. You will receive another email once it has been reviewed.\n\n' +
+        'Regards,\nSLNA'
+  });
+}
+
+function sendSecretaryNewRegistrationEmail(registration) {
+  if (!SECRETARY_EMAIL) return Promise.resolve({ sent: false });
+
+  return sendMail({
+    to: SECRETARY_EMAIL,
+    subject: `New Event Registration - ${registration.event_title}`,
+    text:
+        `A new registration was submitted for "${registration.event_title}"` +
+        (registration.event_date ? ` on ${formatRegistrationEventDate(registration.event_date)}` : '') +
+        '.\n\n' +
+        `Registrant: ${registration.full_name} (${registration.registrant_type})\n` +
+        `Email: ${registration.email}\n` +
+        `Mobile: ${registration.mobile}\n\n` +
+        'Please log in to the staff admin dashboard to review and confirm ' +
+        `this registration:\n${ADMIN_LOGIN_URL}\n\n` +
+        'Regards,\nSLNA Website'
+  });
+}
+
+function sendRegistrationConfirmedEmail(registration) {
+  return sendMail({
+    to: registration.email,
+    subject: `Your SLNA Event Registration Has Been Confirmed - ${registration.event_title}`,
+    text:
+        `Dear ${registration.full_name},\n\n` +
+        `Your registration for "${registration.event_title}"` +
+        (registration.event_date ? ` on ${formatRegistrationEventDate(registration.event_date)}` : '') +
+        ' has been confirmed.\n\n' +
+        'We look forward to your participation.\n\n' +
+        'Regards,\nSLNA'
+  });
+}
+
+function sendRegistrationRejectedEmail(registration) {
+  return sendMail({
+    to: registration.email,
+    subject: `Your SLNA Event Registration Could Not Be Confirmed - ${registration.event_title}`,
+    text:
+        `Dear ${registration.full_name},\n\n` +
+        `We're sorry to let you know that your registration for ` +
+        `"${registration.event_title}" could not be confirmed.\n\n` +
+        `Reason: ${registration.rejection_reason}\n\n` +
+        'If you believe this is a mistake or wish to register again after ' +
+        'addressing the reason above, please submit a new registration for ' +
+        'this event.\n\n' +
+        `${CONTACT_LINE}\n\n` +
+        'Regards,\nSLNA'
+  });
 }
 
 // Submit an event registration with a bank receipt upload (PUBLIC)
@@ -321,10 +399,14 @@ router.post(
       ];
 
       const result = await db.query(sql, values);
+      const registration = normaliseRegistration(result.rows[0]);
+
+      sendRegistrationReceivedEmail(registration);
+      sendSecretaryNewRegistrationEmail(registration);
 
       return res.status(201).json({
         message: 'Registration submitted.',
-        registration: normaliseRegistration(result.rows[0])
+        registration
       });
     } catch (error) {
       console.error('Could not save event registration:', error);
@@ -562,22 +644,40 @@ router.patch('/:id/status', requireAuth, async function (req, res) {
     });
   }
 
+  const rejectionReason = String(req.body.rejectionReason || '').trim();
+
+  if (status === 'Rejected' && !rejectionReason) {
+    return res.status(400).json({
+      error: 'A rejection reason is required when rejecting a registration.'
+    });
+  }
+
   try {
     const result = await db.query(
       `UPDATE event_registrations
-       SET status = $1, updated_at = NOW()
+       SET status = $1,
+           rejection_reason = CASE WHEN $1 = 'Rejected' THEN $3 ELSE NULL END,
+           updated_at = NOW()
        WHERE id = $2
        RETURNING *`,
-      [status, req.params.id]
+      [status, req.params.id, rejectionReason || null]
     );
 
     if (!result.rows.length) {
       return res.status(404).json({ error: 'Registration not found.' });
     }
 
+    const registration = normaliseRegistration(result.rows[0]);
+
+    if (status === 'Confirmed') {
+      sendRegistrationConfirmedEmail(registration);
+    } else if (status === 'Rejected') {
+      sendRegistrationRejectedEmail(registration);
+    }
+
     return res.json({
       message: 'Registration status updated.',
-      registration: normaliseRegistration(result.rows[0])
+      registration
     });
   } catch (error) {
     console.error('Could not update registration status:', error);
