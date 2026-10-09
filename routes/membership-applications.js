@@ -215,6 +215,13 @@ function safeDate(value) {
     return value;
 }
 
+// SLNC registration is not yet mandatory for applicants -- the join form
+// lets them tick "I don't have my SLNC registration yet", in which case
+// both fields are stored as NULL rather than required.
+function hasSlncRegistration(body) {
+    return cleanText(body.slncNotRegisteredYet).toLowerCase() !== 'true';
+}
+
 function safeOriginalFilename(filename) {
     const baseName = path.basename(filename || 'upload');
 
@@ -531,8 +538,6 @@ function validateRequiredFields(body) {
         ['officialAddress', 'Official address is required.'],
         ['mobileNumber', 'Mobile number is required.'],
         ['emailAddress', 'Email address is required.'],
-        ['slncRegistrationNumber', 'SLNC registration number is required.'],
-        ['slncRegistrationDate', 'SLNC registration date is required.'],
         ['designation', 'Designation is required.'],
         ['firstAppointmentDate', 'First appointment date is required.'],
         ['firstAppointmentPlace', 'First appointment place is required.'],
@@ -577,8 +582,14 @@ function validateRequiredFields(body) {
         errors.push('Please provide a valid date of birth.');
     }
 
-    if (!safeDate(body.slncRegistrationDate)) {
-        errors.push('Please provide a valid SLNC registration date.');
+    if (hasSlncRegistration(body)) {
+        if (!cleanText(body.slncRegistrationNumber)) {
+            errors.push('SLNC registration number is required.');
+        }
+
+        if (!safeDate(body.slncRegistrationDate)) {
+            errors.push('Please provide a valid SLNC registration date.');
+        }
     }
 
     if (!safeDate(body.firstAppointmentDate)) {
@@ -721,8 +732,8 @@ router.post(
                     cleanText(req.body.officeNumber) || null,
                     cleanText(req.body.emailAddress).toLowerCase(),
 
-                    cleanText(req.body.slncRegistrationNumber),
-                    safeDate(req.body.slncRegistrationDate),
+                    hasSlncRegistration(req.body) ? cleanText(req.body.slncRegistrationNumber) : null,
+                    hasSlncRegistration(req.body) ? safeDate(req.body.slncRegistrationDate) : null,
                     cleanText(req.body.designation),
                     safeDate(req.body.firstAppointmentDate),
                     cleanText(req.body.firstAppointmentPlace) || null,
@@ -1162,6 +1173,86 @@ router.get(
     }
 );
 
+// Sri Lankan mobile numbers may be entered as 0XXXXXXXXX or +94XXXXXXXXX
+// (locally, vs. the registration form, vs. years apart) -- strip everything
+// down to the bare 9-digit subscriber number so both forms compare equal.
+function normalizeMobileNumber(value) {
+    const digits = String(value || '').replace(/[^0-9]/g, '');
+
+    if (digits.startsWith('94') && digits.length === 11) {
+        return digits.slice(2);
+    }
+
+    if (digits.startsWith('0') && digits.length === 10) {
+        return digits.slice(1);
+    }
+
+    return digits;
+}
+
+/*
+ * Public: look up a membership number using NIC + date of birth + mobile
+ * number, for applicants who have lost their application reference number.
+ * Only matches an approved application with a membership number assigned.
+ * Deliberately returns the same generic "not found" message regardless of
+ * which field didn't match, so this can't be used to enumerate valid NICs.
+ *
+ * POST /api/membership/find-membership-number
+ */
+router.post(
+    '/find-membership-number',
+
+    async function (req, res, next) {
+        try {
+            const nic = cleanText(req.body.nic).toUpperCase();
+            const dateOfBirth = safeDate(req.body.dateOfBirth);
+            const mobile = cleanText(req.body.mobileNumber);
+
+            if (!nic || !dateOfBirth || !mobile) {
+                throw validationError(
+                    'NIC, date of birth, and mobile number are all required.'
+                );
+            }
+
+            const normalizedInputMobile = normalizeMobileNumber(mobile);
+
+            const result = await pool.query(
+                `
+                    SELECT full_name, membership_number, mobile_number
+                    FROM membership_applications
+                    WHERE UPPER(nic_number) = $1
+                      AND date_of_birth = $2
+                      AND application_status = 'approved'
+                      AND membership_number IS NOT NULL
+                `,
+                [nic, dateOfBirth]
+            );
+
+            const match = result.rows.find(function (row) {
+                return normalizeMobileNumber(row.mobile_number) === normalizedInputMobile;
+            });
+
+            if (!match) {
+                return res.status(404).json({
+                    success: false,
+                    message:
+                        'No approved membership was found matching those details. ' +
+                        'Please double-check your NIC, date of birth, and mobile ' +
+                        'number, or contact SLNA for assistance.'
+                });
+            }
+
+            return res.json({
+                success: true,
+                fullName: match.full_name,
+                membershipNumber: match.membership_number
+            });
+        } catch (error) {
+            return next(error);
+        }
+    }
+);
+
 router.get(
     '/admin/applications/:referenceNumber/id-application.pdf',
     requireAuth,
@@ -1541,9 +1632,11 @@ router.get(
 
             drawCompactTwoColumnField(
                 'SLNC Reg. No.',
-                application.slnc_registration_number,
+                application.slnc_registration_number || 'N/A',
                 'SLNC Reg. Date',
-                formatPdfDate(application.slnc_registration_date),
+                application.slnc_registration_date
+                    ? formatPdfDate(application.slnc_registration_date)
+                    : 'N/A',
                 26
             );
 
