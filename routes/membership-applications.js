@@ -508,7 +508,7 @@ function sendApplicationDecisionEmail(application) {
             `Your SLNA lifetime membership application (reference ${application.referenceNumber}) ` +
             (isRejected ? 'has been rejected.' : 'requires more information.') +
             '\n\n' +
-            `${application.statusNote || ''}\n\n` +
+            (application.statusNote ? `Reason - ${application.statusNote}\n\n` : '') +
             `${resubmitNote}\n\n` +
             `${CONTACT_LINE}\n\n` +
             'Regards,\nSLNA'
@@ -1191,8 +1191,8 @@ function normalizeMobileNumber(value) {
 }
 
 /*
- * Public: look up a membership number using NIC + date of birth + mobile
- * number, for applicants who have lost their application reference number.
+ * Public: look up a membership number using NIC + mobile number, for
+ * applicants who have lost their application reference number.
  * Only matches an approved application with a membership number assigned.
  * Deliberately returns the same generic "not found" message regardless of
  * which field didn't match, so this can't be used to enumerate valid NICs.
@@ -1205,12 +1205,11 @@ router.post(
     async function (req, res, next) {
         try {
             const nic = cleanText(req.body.nic).toUpperCase();
-            const dateOfBirth = safeDate(req.body.dateOfBirth);
             const mobile = cleanText(req.body.mobileNumber);
 
-            if (!nic || !dateOfBirth || !mobile) {
+            if (!nic || !mobile) {
                 throw validationError(
-                    'NIC, date of birth, and mobile number are all required.'
+                    'NIC and mobile number are both required.'
                 );
             }
 
@@ -1221,11 +1220,10 @@ router.post(
                     SELECT full_name, membership_number, mobile_number
                     FROM membership_applications
                     WHERE UPPER(nic_number) = $1
-                      AND date_of_birth = $2
                       AND application_status = 'approved'
                       AND membership_number IS NOT NULL
                 `,
-                [nic, dateOfBirth]
+                [nic]
             );
 
             const match = result.rows.find(function (row) {
@@ -1237,8 +1235,8 @@ router.post(
                     success: false,
                     message:
                         'No approved membership was found matching those details. ' +
-                        'Please double-check your NIC, date of birth, and mobile ' +
-                        'number, or contact SLNA for assistance.'
+                        'Please double-check your NIC and mobile number, or ' +
+                        'contact SLNA for assistance.'
                 });
             }
 
