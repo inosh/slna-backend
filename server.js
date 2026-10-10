@@ -18,6 +18,7 @@ const membershipApplicationsRoutes = require(
 const eventsRoutes = require('./routes/events');
 const eventRegistrationsRoutes = require('./routes/event-registrations');
 const contactQueriesRoutes = require('./routes/contact-queries');
+const membershipFeesRoutes = require('./routes/membership-fees');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -47,6 +48,7 @@ app.use(
 app.use('/api/events', eventsRoutes);
 app.use('/api/event-registrations', eventRegistrationsRoutes);
 app.use('/api/contact-queries', contactQueriesRoutes);
+app.use('/api/membership-fees', membershipFeesRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'SLNA backend is running.' });
