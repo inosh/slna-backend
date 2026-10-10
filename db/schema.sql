@@ -424,3 +424,30 @@ CREATE INDEX IF NOT EXISTS idx_contact_queries_created_at
     ON public.contact_queries USING btree
     (created_at DESC NULLS LAST)
     TABLESPACE pg_default;
+
+-- Table: public.membership_fee_settings
+-- Admin-configurable membership fees shown on the public Membership
+-- Categories & Fees page. amount stays NOT NULL (same convention as
+-- cpd_events.fee_type / member_fee) -- "to be announced" is tracked via
+-- is_tba rather than a nullable amount, so the column is never ambiguous
+-- between "not set yet" and "deliberately TBA". The API layer still
+-- reports amount as null to callers when is_tba is true.
+
+-- DROP TABLE IF EXISTS public.membership_fee_settings;
+
+CREATE TABLE IF NOT EXISTS public.membership_fee_settings
+(
+    key text COLLATE pg_catalog."default" NOT NULL,
+    label text COLLATE pg_catalog."default" NOT NULL,
+    amount numeric(10,2) NOT NULL DEFAULT 0,
+    is_tba boolean NOT NULL DEFAULT false,
+    updated_at timestamp with time zone NOT NULL DEFAULT now(),
+    CONSTRAINT membership_fee_settings_pkey PRIMARY KEY (key),
+    CONSTRAINT membership_fee_settings_key_check CHECK (key = ANY (ARRAY['associate'::text, 'lifetime'::text, 'upgrade'::text])),
+    CONSTRAINT membership_fee_settings_amount_check CHECK (amount >= 0)
+    )
+
+    TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.membership_fee_settings
+    OWNER to postgres;
