@@ -6,7 +6,7 @@ const express = require('express');
 const pool = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
 const { uploadNewsPhoto, uploadNewsDocument } = require('../middleware/upload');
-const { getPublicObject, objectBodyToString } = require('../lib/r2');
+const { getPublicObject, objectBodyToString, publicUrlForKey } = require('../lib/r2');
 
 const router = express.Router();
 
@@ -19,6 +19,25 @@ const NEWS_TYPES = [
   'CPD Event',
   'General News',
 ];
+
+// Replaces each "__CONTENT_IMG_<n>__" placeholder left in the body by the
+// admin panel (see js/admin-panel.js's extractContentImages) with the real
+// uploaded image's absolute R2 URL, in upload order. This has to be the full
+// R2 URL rather than the "/uploads/..." path used for photo_url/album
+// photos -- those are resolved against the API origin client-side (see
+// fullUrl() in js/news.js) before use, but body is injected as raw HTML
+// as-is, so a relative path would resolve against whatever origin serves
+// the page instead and 404. Images that were already real URLs (editing an
+// existing article) never had a placeholder, so they pass through
+// untouched. No-op when no content images were sent.
+function applyContentImages(body, files) {
+  if (!files || files.length === 0) return body;
+  let result = body;
+  files.forEach((file, index) => {
+    result = result.split('__CONTENT_IMG_' + index + '__').join(publicUrlForKey(file.key));
+  });
+  return result;
+}
 
 // Creates an album from gallery photos uploaded alongside a news item, using
 // the news title/date as the album title/date, and returns the new album id.
@@ -105,9 +124,14 @@ router.get('/:id', async (req, res) => {
 router.post(
   '/typed',
   requireAuth,
-  uploadNewsPhoto.fields([{ name: 'photo', maxCount: 1 }, { name: 'photos', maxCount: 30 }]),
+  uploadNewsPhoto.fields([
+    { name: 'photo', maxCount: 1 },
+    { name: 'photos', maxCount: 30 },
+    { name: 'content_images', maxCount: 20 },
+  ]),
   async (req, res) => {
-    const { title, event_date, summary, body, news_type } = req.body;
+    const { title, event_date, summary, news_type } = req.body;
+    let { body } = req.body;
 
     if (!title || !event_date || !body || !news_type) {
       return res.status(400).json({ error: 'Title, date, type, and content are required.' });
@@ -118,7 +142,9 @@ router.post(
 
     const coverFile = req.files && req.files['photo'] ? req.files['photo'][0] : null;
     const galleryFiles = req.files && req.files['photos'] ? req.files['photos'] : [];
+    const contentImageFiles = req.files && req.files['content_images'] ? req.files['content_images'] : [];
     const photoUrl = coverFile ? `/uploads/${coverFile.key}` : null;
+    body = applyContentImages(body, contentImageFiles);
 
     const client = await pool.connect();
     try {
@@ -224,9 +250,14 @@ router.post(
 router.put(
   '/:id',
   requireAuth,
-  uploadNewsPhoto.fields([{ name: 'photo', maxCount: 1 }, { name: 'photos', maxCount: 30 }]),
+  uploadNewsPhoto.fields([
+    { name: 'photo', maxCount: 1 },
+    { name: 'photos', maxCount: 30 },
+    { name: 'content_images', maxCount: 20 },
+  ]),
   async (req, res) => {
-    const { title, event_date, summary, body, news_type } = req.body;
+    const { title, event_date, summary, news_type } = req.body;
+    let { body } = req.body;
     const overrideAlbum = req.body.override_album === 'true';
 
     if (!title || !event_date || !body || !news_type) {
@@ -238,6 +269,8 @@ router.put(
 
     const coverFile = req.files && req.files['photo'] ? req.files['photo'][0] : null;
     const galleryFiles = req.files && req.files['photos'] ? req.files['photos'] : [];
+    const contentImageFiles = req.files && req.files['content_images'] ? req.files['content_images'] : [];
+    body = applyContentImages(body, contentImageFiles);
 
     if (overrideAlbum && galleryFiles.length === 0) {
       return res.status(400).json({
