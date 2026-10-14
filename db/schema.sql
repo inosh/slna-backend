@@ -451,3 +451,102 @@ CREATE TABLE IF NOT EXISTS public.membership_fee_settings
 
 ALTER TABLE IF EXISTS public.membership_fee_settings
     OWNER to postgres;
+
+-- Table: public.exec_committee_members
+-- The 10 Executive Committee seats are fixed by the SLNA constitution --
+-- rows are seeded once (see db/migrate-exec-committee.js) and only ever
+-- updated (name/designation/role_title/photo), never created or deleted.
+
+-- DROP TABLE IF EXISTS public.exec_committee_members;
+
+CREATE TABLE IF NOT EXISTS public.exec_committee_members
+(
+    slot_key character varying(40) COLLATE pg_catalog."default" NOT NULL,
+    display_order integer NOT NULL,
+    role_title character varying(100) COLLATE pg_catalog."default" NOT NULL,
+    designation character varying(150) COLLATE pg_catalog."default",
+    name character varying(255) COLLATE pg_catalog."default" NOT NULL,
+    photo_url character varying(500) COLLATE pg_catalog."default",
+    photo_filename character varying(255) COLLATE pg_catalog."default",
+    updated_at timestamp with time zone NOT NULL DEFAULT now(),
+    CONSTRAINT exec_committee_members_pkey PRIMARY KEY (slot_key),
+    CONSTRAINT exec_committee_members_slot_key_check CHECK (slot_key::text = ANY (ARRAY['president'::character varying, 'general_secretary'::character varying, 'treasurer'::character varying, 'vp_hospital'::character varying, 'vp_education'::character varying, 'vp_public_health'::character varying, 'asst_secretary_1'::character varying, 'asst_secretary_2'::character varying, 'asst_treasurer'::character varying, 'librarian'::character varying]::text[]))
+    )
+
+    TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.exec_committee_members
+    OWNER to postgres;
+
+-- Table: public.exec_committee_settings
+-- Singleton row (id always 1) holding the term years and the Annual
+-- General Meeting details shown above the Executive Committee roster.
+
+-- DROP TABLE IF EXISTS public.exec_committee_settings;
+
+CREATE TABLE IF NOT EXISTS public.exec_committee_settings
+(
+    id integer NOT NULL DEFAULT 1,
+    term_start_year integer NOT NULL,
+    term_end_year integer NOT NULL,
+    agm_number integer NOT NULL,
+    agm_date date NOT NULL,
+    agm_venue text COLLATE pg_catalog."default",
+    updated_at timestamp with time zone NOT NULL DEFAULT now(),
+    CONSTRAINT exec_committee_settings_pkey PRIMARY KEY (id),
+    CONSTRAINT exec_committee_settings_singleton_check CHECK (id = 1)
+    )
+
+    TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.exec_committee_settings
+    OWNER to postgres;
+
+-- Table: public.sub_committees
+-- The 7 Sub Committees are fixed -- rows are seeded once (see
+-- db/migrate-sub-committees.js) and never created or deleted here.
+
+-- DROP TABLE IF EXISTS public.sub_committees;
+
+CREATE TABLE IF NOT EXISTS public.sub_committees
+(
+    slot_key character varying(40) COLLATE pg_catalog."default" NOT NULL,
+    display_order integer NOT NULL,
+    name character varying(255) COLLATE pg_catalog."default" NOT NULL,
+    description text COLLATE pg_catalog."default",
+    updated_at timestamp with time zone NOT NULL DEFAULT now(),
+    CONSTRAINT sub_committees_pkey PRIMARY KEY (slot_key),
+    CONSTRAINT sub_committees_slot_key_check CHECK (slot_key::text = ANY (ARRAY['nursing-education'::character varying, 'nursing-services'::character varying, 'development-planning'::character varying, 'publicity-public-relations'::character varying, 'nominations'::character varying, 'social-economic-welfare'::character varying, 'finance'::character varying]::text[]))
+    )
+
+    TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.sub_committees
+    OWNER to postgres;
+
+-- Table: public.sub_committee_members
+-- Each Sub Committee has exactly 5 fixed seats -- only name/designation
+-- on a row is ever updated, never created or deleted.
+
+-- DROP TABLE IF EXISTS public.sub_committee_members;
+
+CREATE TABLE IF NOT EXISTS public.sub_committee_members
+(
+    id serial NOT NULL,
+    committee_key character varying(40) COLLATE pg_catalog."default" NOT NULL,
+    display_order integer NOT NULL,
+    designation character varying(150) COLLATE pg_catalog."default",
+    name character varying(255) COLLATE pg_catalog."default" NOT NULL,
+    updated_at timestamp with time zone NOT NULL DEFAULT now(),
+    CONSTRAINT sub_committee_members_pkey PRIMARY KEY (id),
+    CONSTRAINT sub_committee_members_committee_key_fkey FOREIGN KEY (committee_key)
+    REFERENCES public.sub_committees (slot_key) MATCH SIMPLE
+                         ON UPDATE NO ACTION
+                         ON DELETE CASCADE,
+    CONSTRAINT sub_committee_members_committee_order_key UNIQUE (committee_key, display_order)
+    )
+
+    TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.sub_committee_members
+    OWNER to postgres;
