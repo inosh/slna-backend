@@ -189,6 +189,13 @@ const uploadEventPayment = multer({
   limits: { fileSize: 15 * 1024 * 1024 }, // 15MB max
 });
 
+// Executive Committee member photos.
+const uploadExecCommitteePhoto = multer({
+  storage: makeStorage('exec-committee'),
+  fileFilter: imageFilter,
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB max
+});
+
 module.exports = {
   uploadNewsPhoto,
   uploadNewsDocument,
@@ -196,4 +203,5 @@ module.exports = {
   uploadEventPhoto,
   uploadCpdEventFiles,
   uploadEventPayment,
+  uploadExecCommitteePhoto,
 };
