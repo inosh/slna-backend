@@ -243,12 +243,12 @@ function sendRegistrationReceivedEmail(registration) {
         'by the SLNA office' +
         (registration.paid_amount > 0 ? ' (including verification of your payment receipt)' : '') +
         '. You will receive another email once it has been reviewed.\n\n' +
-        'Regards,\nSLNA'
+        'Regards,\nSri Lanka Nurses Association'
   });
 }
 
 function sendSecretaryNewRegistrationEmail(registration) {
-  if (!SECRETARY_EMAIL) return Promise.resolve({ sent: false });
+  if (!SECRETARY_EMAIL.length) return Promise.resolve({ sent: false });
 
   return sendMail({
     to: SECRETARY_EMAIL,
@@ -262,7 +262,7 @@ function sendSecretaryNewRegistrationEmail(registration) {
         `Mobile: ${registration.mobile}\n\n` +
         'Please log in to the staff admin dashboard to review and confirm ' +
         `this registration:\n${ADMIN_LOGIN_URL}\n\n` +
-        'Regards,\nSLNA Website'
+        'Regards,\nSri Lanka Nurses Association'
   });
 }
 
@@ -276,7 +276,7 @@ function sendRegistrationConfirmedEmail(registration) {
         (registration.event_date ? ` on ${formatRegistrationEventDate(registration.event_date)}` : '') +
         ' has been confirmed.\n\n' +
         'We look forward to your participation.\n\n' +
-        'Regards,\nSLNA'
+        'Regards,\nSri Lanka Nurses Association'
   });
 }
 
@@ -293,7 +293,7 @@ function sendRegistrationRejectedEmail(registration) {
         'addressing the reason above, please submit a new registration for ' +
         'this event.\n\n' +
         `${CONTACT_LINE}\n\n` +
-        'Regards,\nSLNA'
+        'Regards,\nSri Lanka Nurses Association'
   });
 }
 
