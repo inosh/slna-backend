@@ -427,12 +427,12 @@ function sendApplicationReceivedEmail(application) {
             'Please save this reference number -- you will need it to check ' +
             'your application status from the "Check Status" tab on the ' +
             'SLNA membership page.\n\n' +
-            'Regards,\nSLNA'
+            'Regards,\nSri Lanka Nurses Association'
     });
 }
 
 function sendSecretaryNewApplicationEmail(application) {
-    if (!SECRETARY_EMAIL) {
+    if (!SECRETARY_EMAIL.length) {
         return Promise.resolve({ sent: false });
     }
 
@@ -446,7 +446,7 @@ function sendSecretaryNewApplicationEmail(application) {
             `Reference number: ${application.referenceNumber}\n\n` +
             'Please log in to the staff admin dashboard to review this ' +
             `application:\n${ADMIN_LOGIN_URL}\n\n` +
-            'Regards,\nSLNA Website'
+            'Regards,\nSri Lanka Nurses Association'
     });
 }
 
@@ -462,12 +462,12 @@ function sendApplicationApprovedEmail(application) {
             '(reference ' + application.referenceNumber + ') has been approved.\n\n' +
             `Your membership number: ${application.membershipNumber}\n\n` +
             'Please keep this membership number for your records.\n\n' +
-            'Regards,\nSLNA'
+            'Regards,\nSri Lanka Nurses Association'
     });
 }
 
 function sendSecretaryApplicationApprovedEmail(application) {
-    if (!SECRETARY_EMAIL) {
+    if (!SECRETARY_EMAIL.length) {
         return Promise.resolve({ sent: false });
     }
 
@@ -480,7 +480,7 @@ function sendSecretaryApplicationApprovedEmail(application) {
             `Email: ${application.emailAddress}\n` +
             `Reference number: ${application.referenceNumber}\n` +
             `Membership number assigned: ${application.membershipNumber}\n\n` +
-            'Regards,\nSLNA Website'
+            'Regards,\nSri Lanka Nurses Association'
     });
 }
 
@@ -511,7 +511,7 @@ function sendApplicationDecisionEmail(application) {
             (application.statusNote ? `Reason - ${application.statusNote}\n\n` : '') +
             `${resubmitNote}\n\n` +
             `${CONTACT_LINE}\n\n` +
-            'Regards,\nSLNA'
+            'Regards,\nSri Lanka Nurses Association'
     });
 }
 
