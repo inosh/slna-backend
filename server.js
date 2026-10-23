@@ -4,6 +4,7 @@
 
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const multer = require('multer');
 require('dotenv').config();
 
@@ -26,7 +27,35 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // --- Middleware ---
-app.use(cors());
+// crossOriginResourcePolicy is relaxed to "cross-origin" because the
+// /uploads/* route below redirects to images on R2, which the frontend
+// (a different origin) needs to be able to load.
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+
+// Only the configured production frontend origin(s) -- plus localhost, for
+// local development -- may call this API from a browser. CORS_ORIGIN can be
+// a comma-separated list; it falls back to SITE_URL so existing deployments
+// keep working without extra config.
+const allowedOrigins = (process.env.CORS_ORIGIN || process.env.SITE_URL || '')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+
+app.use(cors({
+  origin(origin, callback) {
+    // Requests with no Origin header (server-to-server calls, curl, Postman)
+    // aren't subject to the browser's CORS check, so let them through.
+    if (!origin) return callback(null, true);
+
+    const normalized = origin.replace(/\/+$/, '');
+    if (allowedOrigins.includes(normalized) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalized)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error('Not allowed by CORS'));
+  },
+}));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
