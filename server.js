@@ -22,6 +22,8 @@ const contactQueriesRoutes = require('./routes/contact-queries');
 const membershipFeesRoutes = require('./routes/membership-fees');
 const executiveCommitteeRoutes = require('./routes/executive-committee');
 const subCommitteesRoutes = require('./routes/sub-committees');
+const legacyMembersRoutes = require('./routes/legacy-members');
+const memberDirectoryRoutes = require('./routes/member-directory');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -82,6 +84,8 @@ app.use('/api/contact-queries', contactQueriesRoutes);
 app.use('/api/membership-fees', membershipFeesRoutes);
 app.use('/api/executive-committee', executiveCommitteeRoutes);
 app.use('/api/sub-committees', subCommitteesRoutes);
+app.use('/api/legacy-members', legacyMembersRoutes);
+app.use('/api/member-directory', memberDirectoryRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'SLNA backend is running.' });
@@ -117,10 +121,11 @@ app.use((err, req, res, next) => {
     return res.status(400).json({ error: err.message });
   }
 
-  // Anything else -- log the technical detail on the server, but keep the
-  // message shown to the admin user generic and non-alarming.
-  console.error('Unhandled error:', err);
-  res.status(500).json({ error: 'Something went wrong on the server. Please try again, or contact your website administrator if the problem continues.' });
+  // Anything else isn't an upload problem -- hand it to the generic error
+  // handler below, which knows how to respect error.statusCode (e.g. the
+  // 400s thrown by validationError() across the admin routes) instead of
+  // flattening every error into an opaque 500.
+  return next(err);
 });
 
 app.use(function (error, req, res, next) {

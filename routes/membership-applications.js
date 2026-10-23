@@ -926,6 +926,24 @@ router.patch(
                 );
             }
 
+            // Membership numbers must also be unique against the pre-digital
+            // lifetime membership roll (legacy_lifetime_members) -- that table
+            // has its own UNIQUE constraint, but it's a separate table, so a
+            // collision there wouldn't be caught by this one's UNIQUE
+            // constraint on membership_number.
+            if (status === 'approved' && membershipNumber) {
+                const legacyMatch = await pool.query(
+                    'SELECT full_name FROM legacy_lifetime_members WHERE membership_number = $1',
+                    [membershipNumber]
+                );
+
+                if (legacyMatch.rowCount > 0) {
+                    throw validationError(
+                        `This membership number is already assigned to an existing member: ${legacyMatch.rows[0].full_name}. Please use a different number.`
+                    );
+                }
+            }
+
             const existingResult = await pool.query(
                 `
                     SELECT
@@ -1105,6 +1123,113 @@ router.patch(
                 });
             }
 
+            return next(error);
+        }
+    }
+);
+
+/*
+ * Admin: update a member's personal/contact/professional details.
+ * Deliberately excludes membershipNumber, referenceNumber, and every
+ * workflow field (status, notes, timestamps) -- those stay with the
+ * /status endpoint above. This is only for correcting/filling in the
+ * person's own information after the fact.
+ *
+ * PATCH /api/membership/admin/applications/:referenceNumber/details
+ */
+const PERSONAL_DETAIL_FIELDS = [
+    ['fullName', 'full_name', 'Full name', true],
+    ['nameWithInitials', 'name_with_initials', 'Name with initials', true],
+    ['title', 'title', 'Title', true],
+    ['nicNumber', 'nic_number', 'National ID number', true],
+    ['dateOfBirth', 'date_of_birth', 'Date of birth', true],
+    ['sex', 'sex', 'Sex', true],
+    ['maritalStatus', 'marital_status', 'Marital status', true],
+    ['permanentAddress', 'permanent_address', 'Permanent address', true],
+    ['currentWorkingPlace', 'current_working_place', 'Current working place', true],
+    ['officialAddress', 'official_address', 'Official address', false],
+    ['mobileNumber', 'mobile_number', 'Mobile number', true],
+    ['whatsappNumber', 'whatsapp_number', 'WhatsApp number', false],
+    ['residentialNumber', 'residential_number', 'Residential number', false],
+    ['officeNumber', 'office_number', 'Office number', false],
+    ['emailAddress', 'email_address', 'Email address', true],
+    ['slncRegistrationNumber', 'slnc_registration_number', 'SLNC registration number', false],
+    ['slncRegistrationDate', 'slnc_registration_date', 'SLNC registration date', false],
+    ['designation', 'designation', 'Designation', true],
+    ['firstAppointmentDate', 'first_appointment_date', 'First appointment date', false],
+    ['firstAppointmentPlace', 'first_appointment_place', 'First appointment place', false],
+    ['nursingSchool', 'nursing_school', 'Nursing school', false],
+    ['batch', 'batch', 'Batch', false],
+    ['higherEducationalQualification', 'higher_educational_qualification', 'Higher educational qualification', false]
+];
+
+router.patch(
+    '/admin/applications/:referenceNumber/details',
+
+    requireAuth,
+
+    async function (req, res, next) {
+        try {
+            const referenceNumber = normaliseReferenceNumber(
+                req.params.referenceNumber
+            );
+
+            if (!referenceNumber) {
+                throw validationError(
+                    'Application reference number is required.'
+                );
+            }
+
+            const updates = [];
+            const values = [];
+
+            for (const [jsonKey, column, label, required] of PERSONAL_DETAIL_FIELDS) {
+                if (!(jsonKey in req.body)) continue;
+
+                let value = req.body[jsonKey];
+                value = typeof value === 'string' ? cleanText(value) : value;
+                value = value === '' ? null : value;
+
+                if (required && value === null) {
+                    throw validationError(`${label} cannot be empty.`);
+                }
+
+                if (jsonKey === 'sex' && value && !['Male', 'Female'].includes(value)) {
+                    throw validationError('Sex must be Male or Female.');
+                }
+
+                values.push(value);
+                updates.push(`${column} = $${values.length}`);
+            }
+
+            if (!updates.length) {
+                throw validationError('No fields to update were provided.');
+            }
+
+            values.push(referenceNumber);
+
+            const result = await pool.query(
+                `
+                    UPDATE membership_applications
+                    SET ${updates.join(', ')}, updated_at = NOW()
+                    WHERE reference_number = $${values.length}
+                    RETURNING *
+                `,
+                values
+            );
+
+            if (!result.rowCount) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Membership application not found.'
+                });
+            }
+
+            return res.json({
+                success: true,
+                application: applicationToAdminJson(result.rows[0])
+            });
+        } catch (error) {
             return next(error);
         }
     }
