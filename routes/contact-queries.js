@@ -5,6 +5,7 @@
 const express = require('express');
 const pool = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
+const { contactFormLimiter } = require('../middleware/rate-limit');
 
 const router = express.Router();
 
@@ -34,7 +35,7 @@ function validateQueryInput(body) {
 }
 
 // POST /api/contact-queries - submit a contact/inquiry/feedback message (PUBLIC)
-router.post('/', async (req, res) => {
+router.post('/', contactFormLimiter, async (req, res) => {
   const validation = validateQueryInput(req.body);
 
   if (validation.error) {
