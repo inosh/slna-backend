@@ -74,6 +74,9 @@ function toMemberJson(row) {
         higherEducationalQualification: row.higher_educational_qualification,
         adminNote: row.admin_note,
         sourceRowNo: row.source_row_no,
+        isActive: row.is_active,
+        deactivatedAt: row.deactivated_at,
+        deactivatedBy: row.deactivated_by,
         createdAt: row.created_at,
         updatedAt: row.updated_at
     };
@@ -234,6 +237,58 @@ router.patch('/:id', requireAuth, async function (req, res, next) {
             error.message = 'That membership number is already in use by another legacy member.';
         }
 
+        return next(error);
+    }
+});
+
+// PATCH /api/legacy-members/:id/deactivate (admin only) -- soft-deactivate
+// a legacy member. Legacy members are never deleted from the admin
+// dashboard (see routes/membership-applications.js for the equivalent on
+// digital applications), so this just flips is_active and stops them
+// showing up in the active Member Directory views.
+router.patch('/:id/deactivate', requireAuth, async function (req, res, next) {
+    try {
+        const id = Number(req.params.id);
+
+        if (!Number.isInteger(id)) {
+            const error = new Error('Unknown legacy member.');
+            error.statusCode = 404;
+            throw error;
+        }
+
+        const existingResult = await pool.query(
+            'SELECT is_active FROM legacy_lifetime_members WHERE id = $1',
+            [id]
+        );
+
+        if (!existingResult.rowCount) {
+            const error = new Error('Unknown legacy member.');
+            error.statusCode = 404;
+            throw error;
+        }
+
+        if (!existingResult.rows[0].is_active) {
+            const error = new Error('This member is already deactivated.');
+            error.statusCode = 400;
+            throw error;
+        }
+
+        const deactivatedBy = req.user && req.user.id ? req.user.id : null;
+
+        const result = await pool.query(
+            `UPDATE legacy_lifetime_members
+             SET is_active = FALSE, deactivated_at = now(), deactivated_by = $1, updated_at = now()
+             WHERE id = $2
+             RETURNING *`,
+            [deactivatedBy, id]
+        );
+
+        return res.json({
+            success: true,
+            message: 'Member deactivated.',
+            member: toMemberJson(result.rows[0])
+        });
+    } catch (error) {
         return next(error);
     }
 });
