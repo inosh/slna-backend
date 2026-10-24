@@ -278,6 +278,14 @@ function applicationToAdminJson(application) {
         idApplicationCreatedAt: application.id_application_created_at,
         idApplicationCreatedBy: application.id_application_created_by,
 
+        isManualEntry: application.is_manual_entry,
+        manualEntryCreatedAt: application.manual_entry_created_at,
+        manualEntryCreatedBy: application.manual_entry_created_by,
+
+        isActive: application.is_active,
+        deactivatedAt: application.deactivated_at,
+        deactivatedBy: application.deactivated_by,
+
         fullName: application.full_name,
         nameWithInitials: application.name_with_initials,
         title: application.title,
@@ -801,6 +809,14 @@ router.get(
                         id_application_created_at,
                         id_application_created_by,
 
+                        is_manual_entry,
+                        manual_entry_created_at,
+                        manual_entry_created_by,
+
+                        is_active,
+                        deactivated_at,
+                        deactivated_by,
+
                         full_name,
                         name_with_initials,
                         title,
@@ -1228,6 +1244,348 @@ router.patch(
             return res.json({
                 success: true,
                 application: applicationToAdminJson(result.rows[0])
+            });
+        } catch (error) {
+            return next(error);
+        }
+    }
+);
+
+/*
+ * Admin: manually record a member who was accepted outside the normal
+ * online application flow -- e.g. someone who filled in a paper/PDF copy
+ * of the join form and handed it to the secretary directly instead of
+ * submitting it online. This creates an already-approved
+ * membership_applications row (same table, same shape the admin edits
+ * elsewhere), minus the paperwork a digital submission always has
+ * (payment receipt, ID photo, declaration) -- there's nothing to upload
+ * or confirm here. It shows up in Member Directory -> Newly Accepted like
+ * any other accepted member, flagged with is_manual_entry for audit, and
+ * is deliberately excluded from the Lifetime Membership Applications
+ * review tab (filtered out in js/admin-panel.js) since there's nothing
+ * left to review -- it's already decided.
+ *
+ * Only membershipNumber and nameWithInitials are required, mirroring
+ * POST /legacy-members -- everything else can be filled in later through
+ * the same "Edit" action used for any other newly-accepted member.
+ *
+ * POST /api/membership/admin/applications/manual
+ */
+router.post(
+    '/admin/applications/manual',
+
+    requireAuth,
+
+    async function (req, res, next) {
+        try {
+            const membershipNumber = cleanText(req.body.membershipNumber);
+            const nameWithInitials = cleanText(req.body.nameWithInitials);
+
+            if (!membershipNumber) {
+                throw validationError('Membership number is required.');
+            }
+
+            if (!nameWithInitials) {
+                throw validationError('Name with initials is required.');
+            }
+
+            const sex = cleanText(req.body.sex);
+
+            if (sex && sex !== 'Male' && sex !== 'Female') {
+                throw validationError('Sex must be Male or Female.');
+            }
+
+            const emailAddress = cleanText(req.body.emailAddress).toLowerCase();
+
+            if (emailAddress && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailAddress)) {
+                throw validationError('Please enter a valid email address.');
+            }
+
+            // Same cross-table collision check used when approving a digital
+            // application -- legacy_lifetime_members has its own UNIQUE
+            // constraint on membership_number, in a separate table the
+            // membership_applications UNIQUE constraint can't see.
+            const legacyMatch = await pool.query(
+                'SELECT full_name FROM legacy_lifetime_members WHERE membership_number = $1',
+                [membershipNumber]
+            );
+
+            if (legacyMatch.rowCount > 0) {
+                throw validationError(
+                    `This membership number is already assigned to an existing member: ${legacyMatch.rows[0].full_name}. Please use a different number.`
+                );
+            }
+
+            const fullName = cleanText(req.body.fullName) || nameWithInitials;
+            const referenceNumber = await createUniqueReferenceNumber();
+            const addedBy = req.user && req.user.id ? req.user.id : null;
+
+            const result = await pool.query(
+                `
+                    INSERT INTO membership_applications (
+                        reference_number,
+                        membership_type,
+                        application_status,
+                        membership_number,
+
+                        full_name,
+                        name_with_initials,
+                        title,
+                        nic_number,
+                        date_of_birth,
+                        sex,
+                        marital_status,
+
+                        permanent_address,
+                        current_working_place,
+                        official_address,
+                        mobile_number,
+                        whatsapp_number,
+                        residential_number,
+                        office_number,
+                        email_address,
+
+                        slnc_registration_number,
+                        slnc_registration_date,
+                        designation,
+                        first_appointment_date,
+                        first_appointment_place,
+                        nursing_school,
+                        batch,
+                        higher_educational_qualification,
+
+                        declaration_confirmed,
+                        is_manual_entry,
+                        manual_entry_created_by,
+                        manual_entry_created_at,
+
+                        reviewed_by,
+                        reviewed_at,
+                        approved_at
+                    )
+                    VALUES (
+                        $1, 'lifetime', 'approved', $2,
+
+                        $3, $4, $5, $6, $7, $8, $9,
+
+                        $10, $11, $12, $13, $14, $15, $16, $17,
+
+                        $18, $19, $20, $21, $22, $23, $24, $25,
+
+                        FALSE, TRUE, $26, NOW(),
+
+                        $26, NOW(), NOW()
+                    )
+                    RETURNING *
+                `,
+                [
+                    referenceNumber,
+                    membershipNumber,
+
+                    fullName,
+                    nameWithInitials,
+                    cleanText(req.body.title) || null,
+                    cleanText(req.body.nicNumber) || null,
+                    safeDate(req.body.dateOfBirth),
+                    sex || null,
+                    cleanText(req.body.maritalStatus) || null,
+
+                    cleanText(req.body.permanentAddress) || null,
+                    cleanText(req.body.currentWorkingPlace) || null,
+                    cleanText(req.body.officialAddress) || null,
+                    cleanText(req.body.mobileNumber) || null,
+                    cleanText(req.body.whatsappNumber) || null,
+                    cleanText(req.body.residentialNumber) || null,
+                    cleanText(req.body.officeNumber) || null,
+                    emailAddress || null,
+
+                    cleanText(req.body.slncRegistrationNumber) || null,
+                    safeDate(req.body.slncRegistrationDate),
+                    cleanText(req.body.designation) || null,
+                    safeDate(req.body.firstAppointmentDate),
+                    cleanText(req.body.firstAppointmentPlace) || null,
+                    cleanText(req.body.nursingSchool) || null,
+                    cleanText(req.body.batch) || null,
+                    cleanText(req.body.higherEducationalQualification) || null,
+
+                    addedBy
+                ]
+            );
+
+            return res.status(201).json({
+                success: true,
+                message: 'Member added to the directory.',
+                application: applicationToAdminJson(result.rows[0])
+            });
+        } catch (error) {
+            if (
+                error &&
+                error.code === '23505' &&
+                error.constraint ===
+                'membership_applications_membership_number_key'
+            ) {
+                return res.status(409).json({
+                    success: false,
+                    message:
+                        'This membership number is already assigned to another member. Please enter a different membership number.',
+                    field: 'membershipNumber'
+                });
+            }
+
+            return next(error);
+        }
+    }
+);
+
+/*
+ * Admin: deactivate an approved member (Member Directory -> Newly
+ * Accepted). This is a soft flag, not a status change or a delete --
+ * application_status stays 'approved' (membership_number, approval date
+ * etc are all still meaningful history), the member just stops appearing
+ * in the active Member Directory views and shows up in Deactivated
+ * Members instead. There's no undo endpoint yet; re-approving a
+ * deactivated member isn't a supported flow.
+ *
+ * PATCH /api/membership/admin/applications/:referenceNumber/deactivate
+ */
+router.patch(
+    '/admin/applications/:referenceNumber/deactivate',
+
+    requireAuth,
+
+    async function (req, res, next) {
+        try {
+            const referenceNumber = normaliseReferenceNumber(
+                req.params.referenceNumber
+            );
+
+            if (!referenceNumber) {
+                throw validationError('Application reference number is required.');
+            }
+
+            const existingResult = await pool.query(
+                'SELECT application_status, is_active FROM membership_applications WHERE reference_number = $1',
+                [referenceNumber]
+            );
+
+            if (existingResult.rowCount === 0) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Membership application not found.'
+                });
+            }
+
+            const existing = existingResult.rows[0];
+
+            if (existing.application_status !== 'approved') {
+                throw validationError('Only approved members can be deactivated.');
+            }
+
+            if (!existing.is_active) {
+                throw validationError('This member is already deactivated.');
+            }
+
+            const deactivatedBy = req.user && req.user.id ? req.user.id : null;
+
+            const result = await pool.query(
+                `
+                    UPDATE membership_applications
+                    SET is_active = FALSE,
+                        deactivated_at = NOW(),
+                        deactivated_by = $1,
+                        updated_at = NOW()
+                    WHERE reference_number = $2
+                    RETURNING *
+                `,
+                [deactivatedBy, referenceNumber]
+            );
+
+            return res.json({
+                success: true,
+                message: 'Member deactivated.',
+                application: applicationToAdminJson(result.rows[0])
+            });
+        } catch (error) {
+            return next(error);
+        }
+    }
+);
+
+/*
+ * Admin: permanently delete a membership application that never became a
+ * member -- pending, rejected, or sent back for more information. Clears
+ * the DB row plus its private R2 objects (payment receipt, ID photo, and
+ * the legacy signature-photo column if it was ever populated). Approved
+ * applications can't be deleted here -- see the /deactivate endpoint
+ * above -- so an approved member is always deactivated, never erased.
+ *
+ * DELETE /api/membership/admin/applications/:referenceNumber
+ */
+router.delete(
+    '/admin/applications/:referenceNumber',
+
+    requireAuth,
+
+    async function (req, res, next) {
+        try {
+            const referenceNumber = normaliseReferenceNumber(
+                req.params.referenceNumber
+            );
+
+            if (!referenceNumber) {
+                throw validationError('Application reference number is required.');
+            }
+
+            const existingResult = await pool.query(
+                `
+                    SELECT
+                        application_status,
+                        payment_receipt_path,
+                        id_photo_path,
+                        signature_photo_path
+                    FROM membership_applications
+                    WHERE reference_number = $1
+                `,
+                [referenceNumber]
+            );
+
+            if (existingResult.rowCount === 0) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Membership application not found.'
+                });
+            }
+
+            const existing = existingResult.rows[0];
+
+            const deletableStatuses = ['pending', 'more_information_required', 'rejected'];
+
+            if (!deletableStatuses.includes(existing.application_status)) {
+                throw validationError(
+                    'Only pending, more-information-required, or rejected applications can be deleted. Approved members must be deactivated instead.'
+                );
+            }
+
+            const keysToDelete = [
+                existing.payment_receipt_path,
+                existing.id_photo_path,
+                existing.signature_photo_path
+            ].filter(Boolean);
+
+            await Promise.all(
+                keysToDelete.map(function (key) {
+                    return deletePrivateObject(key).catch(function () {});
+                })
+            );
+
+            await pool.query(
+                'DELETE FROM membership_applications WHERE reference_number = $1',
+                [referenceNumber]
+            );
+
+            return res.json({
+                success: true,
+                message: 'Membership application deleted.'
             });
         } catch (error) {
             return next(error);

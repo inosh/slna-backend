@@ -73,10 +73,13 @@ function newMemberRowToExport(row) {
 // GET /api/member-directory/export (admin only)
 router.get('/export', requireAuth, async function (req, res, next) {
     try {
+        // Matches the Member Directory -> All Active Members tab this
+        // export is downloaded from: deactivated members are left out of
+        // both.
         const [legacyResult, newResult] = await Promise.all([
-            pool.query('SELECT * FROM legacy_lifetime_members ORDER BY full_name ASC'),
+            pool.query('SELECT * FROM legacy_lifetime_members WHERE is_active ORDER BY full_name ASC'),
             pool.query(
-                "SELECT * FROM membership_applications WHERE application_status = 'approved' ORDER BY full_name ASC"
+                "SELECT * FROM membership_applications WHERE application_status = 'approved' AND is_active ORDER BY full_name ASC"
             )
         ]);
 
