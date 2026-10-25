@@ -8,3 +8,4 @@ uploads/albums/*
 private-uploads/
 .idea
 db/data-export.sql
+db/backups/

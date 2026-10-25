@@ -556,3 +556,58 @@ CREATE TABLE IF NOT EXISTS public.sub_committee_members
 
 ALTER TABLE IF EXISTS public.sub_committee_members
     OWNER to postgres;
+
+-- Table: public.legacy_lifetime_members
+-- The pre-digital lifetime membership roll (previously tracked only in a
+-- spreadsheet). Only basic info columns -- no payment receipt / ID photo /
+-- signature / declaration fields, since none of that was ever collected
+-- for these members on paper. Everything besides membership_number and
+-- full_name is nullable, since the spreadsheet only ever had name, working
+-- place, and registration number -- the rest gets filled in over time from
+-- the admin dashboard as members come forward with more details.
+
+-- DROP TABLE IF EXISTS public.legacy_lifetime_members;
+
+CREATE TABLE IF NOT EXISTS public.legacy_lifetime_members
+(
+    id bigserial NOT NULL,
+    membership_number character varying(50) COLLATE pg_catalog."default" NOT NULL,
+    full_name character varying(255) COLLATE pg_catalog."default" NOT NULL,
+    name_with_initials character varying(255) COLLATE pg_catalog."default",
+    title character varying(20) COLLATE pg_catalog."default",
+    nic_number character varying(20) COLLATE pg_catalog."default",
+    date_of_birth date,
+    sex character varying(10) COLLATE pg_catalog."default",
+    marital_status character varying(30) COLLATE pg_catalog."default",
+    permanent_address text COLLATE pg_catalog."default",
+    current_working_place character varying(255) COLLATE pg_catalog."default",
+    official_address text COLLATE pg_catalog."default",
+    mobile_number character varying(30) COLLATE pg_catalog."default",
+    whatsapp_number character varying(30) COLLATE pg_catalog."default",
+    residential_number character varying(30) COLLATE pg_catalog."default",
+    office_number character varying(30) COLLATE pg_catalog."default",
+    email_address character varying(255) COLLATE pg_catalog."default",
+    slnc_registration_number character varying(100) COLLATE pg_catalog."default",
+    slnc_registration_date date,
+    designation character varying(255) COLLATE pg_catalog."default",
+    first_appointment_date date,
+    first_appointment_place character varying(255) COLLATE pg_catalog."default",
+    nursing_school character varying(255) COLLATE pg_catalog."default",
+    batch character varying(100) COLLATE pg_catalog."default",
+    higher_educational_qualification text COLLATE pg_catalog."default",
+    admin_note text COLLATE pg_catalog."default",
+    source_row_no integer,
+    is_active boolean NOT NULL DEFAULT true,
+    deactivated_at timestamp with time zone,
+    deactivated_by bigint,
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    updated_at timestamp with time zone NOT NULL DEFAULT now(),
+    CONSTRAINT legacy_lifetime_members_pkey PRIMARY KEY (id),
+    CONSTRAINT legacy_lifetime_members_membership_number_key UNIQUE (membership_number),
+    CONSTRAINT legacy_lifetime_members_sex_check CHECK (sex IS NULL OR sex::text = ANY (ARRAY['Male'::character varying, 'Female'::character varying]::text[]))
+    )
+
+    TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.legacy_lifetime_members
+    OWNER to postgres;
