@@ -7,8 +7,9 @@
 // Meant to run as its own scheduled (cron) Railway service -- not inside
 // the always-on API process -- so a deploy/restart of the API can never
 // skip or corrupt a backup run. See the deploy notes for the Railway cron
-// schedule and the nixpacks.toml at the repo root that installs the
-// `pg_dump` binary (not present in a stock Node image).
+// schedule and the railpack.json at the repo root that installs the
+// `pg_dump` binary (not present in a stock Node image) into the runtime
+// image via deploy.aptPackages.
 //
 // Required env vars:
 //   DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME   (same as the API -- see db/pool.js)

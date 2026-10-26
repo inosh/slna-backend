@@ -1,0 +1,8 @@
+# Keeps local-only files out of Docker builds (used by Dockerfile.backup).
+node_modules
+.env
+.env.*
+db/backups
+uploads
+private-uploads
+.git
