@@ -1,0 +1,25 @@
+# Dockerfile.backup
+# Image for the scheduled Railway backup service only (db/backup-to-r2.js).
+# The API service is unaffected: it keeps using Railway's default builder,
+# because this file isn't named "Dockerfile" -- the backup service points at
+# it explicitly (Builder: Dockerfile, Dockerfile path: Dockerfile.backup).
+#
+# Built on the official postgres:18 image so pg_dump always matches the
+# Railway Postgres server's major version (18.x). Bump the tag if the server
+# is ever upgraded -- pg_dump refuses to dump a newer server than itself.
+FROM postgres:18-alpine
+
+RUN apk add --no-cache nodejs npm
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
+
+COPY lib ./lib
+COPY db ./db
+
+# The postgres image's entrypoint would otherwise wrap the command; this
+# container only ever runs the backup script and exits.
+ENTRYPOINT []
+CMD ["node", "db/backup-to-r2.js"]

@@ -1,7 +1,0 @@
-# Adds the PostgreSQL client tools (pg_dump, psql, pg_restore) to the build
-# image. Nixpacks' stock Node setup doesn't include them, but db/backup-to-r2.js
-# shells out to pg_dump. Version pinned to match the Railway Postgres server
-# (18.x, per db/backups/*.sql dump headers) -- bump this if the server's
-# major version ever changes.
-[phases.setup]
-nixPkgs = ["postgresql_18"]
