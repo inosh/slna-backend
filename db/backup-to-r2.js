@@ -150,7 +150,7 @@ async function main() {
   console.log(`[backup] uploaded ${key} in ${seconds}s, deleted ${deleted} backup(s) older than ${RETENTION_DAYS} days.`);
 }
 
-main().catch(async (err) => {
+main().then(() => process.exit(0)).catch(async (err) => {
   console.error('[backup] FAILED:', err.message);
   try {
     await sendMail({
