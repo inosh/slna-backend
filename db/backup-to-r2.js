@@ -6,10 +6,10 @@
 //
 // Meant to run as its own scheduled (cron) Railway service -- not inside
 // the always-on API process -- so a deploy/restart of the API can never
-// skip or corrupt a backup run. See the deploy notes for the Railway cron
-// schedule and the railpack.json at the repo root that installs the
-// `pg_dump` binary (not present in a stock Node image) into the runtime
-// image via deploy.aptPackages.
+// skip or corrupt a backup run. That service builds from Dockerfile.backup
+// (Builder: Dockerfile, Dockerfile path: Dockerfile.backup) instead of
+// Railway's default builder, so its pg_dump always matches the Postgres
+// server's major version -- see that file for why.
 //
 // Required env vars:
 //   DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME   (same as the API -- see db/pool.js)
@@ -150,7 +150,7 @@ async function main() {
   console.log(`[backup] uploaded ${key} in ${seconds}s, deleted ${deleted} backup(s) older than ${RETENTION_DAYS} days.`);
 }
 
-main().catch(async (err) => {
+main().then(() => process.exit(0)).catch(async (err) => {
   console.error('[backup] FAILED:', err.message);
   try {
     await sendMail({
