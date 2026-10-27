@@ -17,8 +17,11 @@ const CPD_EVENT_TYPES = new Set([
   'Study Day',
   'Conference',
   'Educational Program',
+  'Certificate Program',
   'Other'
 ]);
+
+const CPD_EVENT_DURATION_UNITS = new Set(['day', 'month', 'year']);
 
 const OTHER_EVENT_TYPES = new Set([
   'Annual Conference',
@@ -121,6 +124,11 @@ function normaliseCpdEvent(row) {
     member_fee: row.member_fee === null ? null : Number(row.member_fee),
     non_member_fee:
         row.non_member_fee === null ? null : Number(row.non_member_fee),
+    duration_number: row.duration_number === null || row.duration_number === undefined
+        ? 1
+        : Number(row.duration_number),
+    duration_unit: row.duration_unit || 'day',
+    end_date: row.end_date || null,
     photo_url: row.photo_url,
     photo_filename: row.photo_filename,
     attachment_url: row.attachment_url,
@@ -184,7 +192,52 @@ function validateCpdEventInput(body) {
     return 'Non-Member Fee must be a valid amount of 0 or more.';
   }
 
+  if (body.duration_number !== undefined && String(body.duration_number).trim() !== '') {
+    const durationNumber = Number(body.duration_number);
+
+    if (!Number.isInteger(durationNumber) || durationNumber <= 0) {
+      return 'Programme Duration must be a whole number greater than 0.';
+    }
+  }
+
+  if (body.duration_unit !== undefined && String(body.duration_unit).trim() !== '' &&
+      !CPD_EVENT_DURATION_UNITS.has(body.duration_unit)) {
+    return 'Invalid duration unit. Must be "day", "month", or "year".';
+  }
+
+  // Optional admin-entered override for when the programme actually
+  // finishes -- when blank, the app computes an end date from
+  // duration_number/duration_unit instead (see resolveCpdDuration callers).
+  if (body.end_date !== undefined && String(body.end_date).trim() !== '') {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(body.end_date)) {
+      return 'End Date must use YYYY-MM-DD format.';
+    }
+
+    if (body.end_date < body.event_date) {
+      return 'End Date cannot be before the event Date.';
+    }
+  }
+
   return null;
+}
+
+// Defaults to the common case (1 day) whenever the client omits or sends
+// a blank duration -- every CPD event created before this feature existed
+// is, and the vast majority still are, a single-day programme.
+function resolveCpdDuration(body) {
+  const rawNumber = Number(body.duration_number);
+  const duration_number = Number.isInteger(rawNumber) && rawNumber > 0 ? rawNumber : 1;
+  const duration_unit = CPD_EVENT_DURATION_UNITS.has(body.duration_unit) ? body.duration_unit : 'day';
+
+  return { duration_number, duration_unit };
+}
+
+// null unless the admin explicitly entered an end date -- validateCpdEventInput
+// already checked the format and that it isn't before event_date.
+function resolveCpdEndDate(body) {
+  const value = String(body.end_date || '').trim();
+
+  return value || null;
 }
 
 // The client is never trusted to send the right fee amounts for a
@@ -221,6 +274,8 @@ router.post(
 
     const feeType = CPD_EVENT_FEE_TYPES.has(req.body.fee_type) ? req.body.fee_type : 'paid';
     const fees = resolveCpdFees(feeType, req.body.audience === 'Members Only', req.body);
+    const duration = resolveCpdDuration(req.body);
+    const endDate = resolveCpdEndDate(req.body);
 
     const sql = `
       INSERT INTO cpd_events (
@@ -235,13 +290,16 @@ router.post(
         fee_type,
         member_fee,
         non_member_fee,
+        duration_number,
+        duration_unit,
+        end_date,
         photo_url,
         photo_filename,
         attachment_url,
         attachment_filename,
         created_at,
         updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW())
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW())
       RETURNING *
     `;
 
@@ -257,6 +315,9 @@ router.post(
       feeType,
       fees.member_fee,
       fees.non_member_fee,
+      duration.duration_number,
+      duration.duration_unit,
+      endDate,
       eventUploadUrl(photoFile),
       photoFile ? photoFile.originalname : null,
       attachmentUploadUrl(attachmentFile),
@@ -446,6 +507,8 @@ router.put(
 
       const feeType = CPD_EVENT_FEE_TYPES.has(req.body.fee_type) ? req.body.fee_type : 'paid';
       const fees = resolveCpdFees(feeType, req.body.audience === 'Members Only', req.body);
+      const duration = resolveCpdDuration(req.body);
+      const endDate = resolveCpdEndDate(req.body);
 
       const sql = `
         UPDATE cpd_events
@@ -460,12 +523,15 @@ router.put(
             fee_type = $9,
             member_fee = $10,
             non_member_fee = $11,
-            photo_url = $12,
-            photo_filename = $13,
-            attachment_url = $14,
-            attachment_filename = $15,
+            duration_number = $12,
+            duration_unit = $13,
+            end_date = $14,
+            photo_url = $15,
+            photo_filename = $16,
+            attachment_url = $17,
+            attachment_filename = $18,
             updated_at = NOW()
-        WHERE id = $16
+        WHERE id = $19
         RETURNING *
       `;
 
@@ -481,6 +547,9 @@ router.put(
         feeType,
         fees.member_fee,
         fees.non_member_fee,
+        duration.duration_number,
+        duration.duration_unit,
+        endDate,
         photoUrl,
         photoFilename,
         attachmentUrl,

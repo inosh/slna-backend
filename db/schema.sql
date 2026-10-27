@@ -203,6 +203,9 @@ CREATE TABLE IF NOT EXISTS public.cpd_events
     fee_type text COLLATE pg_catalog."default" NOT NULL DEFAULT 'paid'::text,
     member_fee numeric(10,2) NOT NULL DEFAULT 0,
     non_member_fee numeric(10,2) NOT NULL DEFAULT 0,
+    duration_number integer NOT NULL DEFAULT 1,
+    duration_unit text COLLATE pg_catalog."default" NOT NULL DEFAULT 'day'::text,
+    end_date date,
     photo_url text COLLATE pg_catalog."default",
     photo_filename text COLLATE pg_catalog."default",
     attachment_url text COLLATE pg_catalog."default",
@@ -213,7 +216,9 @@ CREATE TABLE IF NOT EXISTS public.cpd_events
     CONSTRAINT cpd_events_audience_check CHECK (audience = ANY (ARRAY['Open for Public'::text, 'Members Only'::text])),
     CONSTRAINT cpd_events_fee_type_check CHECK (fee_type = ANY (ARRAY['paid'::text, 'free'::text, 'free_for_members'::text])),
     CONSTRAINT cpd_events_member_fee_check CHECK (member_fee >= 0),
-    CONSTRAINT cpd_events_non_member_fee_check CHECK (non_member_fee >= 0)
+    CONSTRAINT cpd_events_non_member_fee_check CHECK (non_member_fee >= 0),
+    CONSTRAINT cpd_events_duration_number_check CHECK (duration_number > 0),
+    CONSTRAINT cpd_events_duration_unit_check CHECK (duration_unit = ANY (ARRAY['day'::text, 'month'::text, 'year'::text]))
     )
 
     TABLESPACE pg_default;
