@@ -2041,7 +2041,7 @@ router.get(
                 .font('Helvetica')
                 .fontSize(7.5)
                 .text(
-                    'Phone: +94 112 693 662   |   Web: www.slnurse.lk   |   Email: srilankanursesassociation@gmail.com',
+                    'Phone: +94 713 385 768   |   Web: www.slna.lk   |   Email: office@slna.lk',
                     left,
                     92,
                     {

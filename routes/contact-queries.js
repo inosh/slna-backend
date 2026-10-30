@@ -6,13 +6,42 @@ const express = require('express');
 const pool = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
 const { contactFormLimiter } = require('../middleware/rate-limit');
+const { sendMail, SECRETARY_EMAIL, ADMIN_LOGIN_URL } = require('../lib/mail');
 
 const router = express.Router();
 
 const SUBJECTS = new Set(['general', 'feedback', 'membership', 'events', 'other']);
+const SUBJECT_LABELS = {
+  general: 'General Inquiry',
+  feedback: 'Feedback',
+  membership: 'Membership',
+  events: 'Events',
+  other: 'Other'
+};
 const STATUSES = new Set(['new', 'read']);
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function sendSecretaryNewContactQueryEmail(query) {
+  if (!SECRETARY_EMAIL.length) return Promise.resolve({ sent: false });
+
+  const subjectLabel = SUBJECT_LABELS[query.subject] || query.subject;
+
+  return sendMail({
+    to: SECRETARY_EMAIL,
+    subject: `New Contact Query - ${subjectLabel}`,
+    text:
+        `A new contact query was submitted on the website.\n\n` +
+        `Name: ${query.full_name}\n` +
+        `Email: ${query.email}\n` +
+        `Mobile: ${query.mobile_number}\n` +
+        `Subject: ${subjectLabel}\n\n` +
+        `Message:\n${query.message}\n\n` +
+        'Please log in to the staff admin dashboard to view and respond to ' +
+        `this query:\n${ADMIN_LOGIN_URL}\n\n` +
+        'Regards,\nSri Lanka Nurses Association'
+  });
+}
 
 function validateQueryInput(body) {
   const required = ['fullName', 'email', 'mobileNumber', 'subject', 'message'];
@@ -55,6 +84,8 @@ router.post('/', contactFormLimiter, async (req, res) => {
         String(req.body.message).trim()
       ]
     );
+
+    sendSecretaryNewContactQueryEmail(result.rows[0]);
 
     res.status(201).json({
       message: 'Your message has been sent. The Secretariat will respond as soon as possible.',
