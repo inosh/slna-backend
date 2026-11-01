@@ -450,7 +450,11 @@ function sendSecretaryNewApplicationEmail(application) {
         text:
             'A new lifetime membership application was submitted.\n\n' +
             `Applicant: ${application.fullName}\n` +
+            `Title: ${application.title}\n` +
+            `NIC: ${application.nicNumber}\n` +
             `Email: ${application.emailAddress}\n` +
+            `Mobile number: ${application.mobileNumber}\n` +
+            `Working place: ${application.currentWorkingPlace}\n` +
             `Reference number: ${application.referenceNumber}\n\n` +
             'Please log in to the staff admin dashboard to review this ' +
             `application:\n${ADMIN_LOGIN_URL}\n\n` +
@@ -763,7 +767,11 @@ router.post(
             const emailApplication = {
                 fullName: cleanText(req.body.fullName),
                 emailAddress: cleanText(req.body.emailAddress).toLowerCase(),
-                referenceNumber: result.rows[0].reference_number
+                referenceNumber: result.rows[0].reference_number,
+                title: cleanText(req.body.title),
+                nicNumber: cleanText(req.body.nicNumber),
+                mobileNumber: cleanText(req.body.mobileNumber),
+                currentWorkingPlace: cleanText(req.body.currentWorkingPlace)
             };
 
             sendApplicationReceivedEmail(emailApplication);
@@ -877,6 +885,81 @@ router.get(
                 applications: result.rows.map(
                     applicationToAdminJson
                 )
+            });
+        } catch (error) {
+            return next(error);
+        }
+    }
+);
+
+/*
+ * Admin: suggest the next membership number, so the admin doesn't have to
+ * look up the last one assigned by hand when approving an application or
+ * manually adding a member. It's a suggestion only -- the field it fills
+ * stays editable, since numbering gaps/corrections are an admin call, not
+ * something this endpoint should enforce.
+ *
+ * Only "LT <n>" style numbers (the current numbering scheme) count toward
+ * the suggestion -- legacy_lifetime_members also holds old pre-digital
+ * numbers in a handful of other formats (e.g. "W 266", "K 293/1994") that
+ * aren't part of this sequence and would corrupt the "highest n" lookup.
+ *
+ * The suggested number is also checked against both tables before being
+ * returned, in case something outside this scheme (e.g. a manually typed
+ * number) already claimed it -- if so, the search keeps incrementing until
+ * it finds one that's actually free.
+ *
+ * GET /api/membership/admin/next-membership-number
+ */
+router.get(
+    '/admin/next-membership-number',
+
+    requireAuth,
+
+    async function (req, res, next) {
+        try {
+            const maxResult = await pool.query(`
+                SELECT MAX(n) AS max_n FROM (
+                    SELECT (regexp_match(membership_number, '^LT\\s*([0-9]+)$', 'i'))[1]::int AS n
+                    FROM membership_applications
+                    WHERE membership_number ~* '^LT\\s*[0-9]+$'
+
+                    UNION ALL
+
+                    SELECT (regexp_match(membership_number, '^LT\\s*([0-9]+)$', 'i'))[1]::int AS n
+                    FROM legacy_lifetime_members
+                    WHERE membership_number ~* '^LT\\s*[0-9]+$'
+                ) matches
+            `);
+
+            let candidate = (maxResult.rows[0].max_n || 0) + 1;
+            let membershipNumber = 'LT ' + candidate;
+
+            // Re-check availability directly, in case the candidate was
+            // already claimed by a manually entered number outside the
+            // "LT <n>" sequence this lookup follows.
+            for (let attempts = 0; attempts < 1000; attempts++) {
+                const collisionResult = await pool.query(
+                    `
+                        SELECT 1 FROM membership_applications WHERE membership_number = $1
+                        UNION ALL
+                        SELECT 1 FROM legacy_lifetime_members WHERE membership_number = $1
+                        LIMIT 1
+                    `,
+                    [membershipNumber]
+                );
+
+                if (collisionResult.rowCount === 0) {
+                    break;
+                }
+
+                candidate += 1;
+                membershipNumber = 'LT ' + candidate;
+            }
+
+            return res.json({
+                success: true,
+                membershipNumber: membershipNumber
             });
         } catch (error) {
             return next(error);

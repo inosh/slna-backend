@@ -43,6 +43,30 @@ function sendSecretaryNewContactQueryEmail(query) {
   });
 }
 
+// Quotes the sender's original message underneath the admin's reply, the
+// way a normal email reply would, so they have the context even if they
+// find this email on its own (forwarded, searched up later, etc).
+function sendAdminReplyEmail(query, replyText) {
+  const subjectLabel = SUBJECT_LABELS[query.subject] || query.subject;
+
+  const quotedMessage = String(query.message)
+    .split('\n')
+    .map((line) => '> ' + line)
+    .join('\n');
+
+  return sendMail({
+    to: query.email,
+    subject: `Re: Your ${subjectLabel} message to SLNA`,
+    text:
+        `Dear ${query.full_name},\n\n` +
+        `${replyText}\n\n` +
+        '---\n' +
+        `On ${new Date(query.created_at).toLocaleString('en-GB')}, you wrote:\n` +
+        `${quotedMessage}\n\n` +
+        'Regards,\nSri Lanka Nurses Association'
+  });
+}
+
 function validateQueryInput(body) {
   const required = ['fullName', 'email', 'mobileNumber', 'subject', 'message'];
 
@@ -148,6 +172,55 @@ router.patch('/:id/status', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('Error updating contact query status:', err);
     res.status(500).json({ error: 'Failed to update the query status.' });
+  }
+});
+
+// POST /api/contact-queries/:id/reply - email a reply to the sender (ADMIN)
+//
+// A query holds one reply at a time -- sending again overwrites the stored
+// reply and re-sends the email, there's no threaded history here.
+router.post('/:id/reply', requireAuth, async (req, res) => {
+  const reply = String(req.body.reply || '').trim();
+
+  if (!reply) {
+    return res.status(400).json({ error: 'A reply message is required.' });
+  }
+
+  try {
+    const existing = await pool.query(
+      'SELECT * FROM contact_queries WHERE id = $1',
+      [req.params.id]
+    );
+
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: 'Query not found.' });
+    }
+
+    const query = existing.rows[0];
+
+    const emailResult = await sendAdminReplyEmail(query, reply);
+
+    if (!emailResult.sent) {
+      return res.status(502).json({
+        error: 'Could not send the reply email. Please check the mail configuration and try again.'
+      });
+    }
+
+    const adminId = req.user && req.user.id ? req.user.id : null;
+
+    const result = await pool.query(
+      `UPDATE contact_queries
+       SET admin_reply = $1, replied_at = NOW(), replied_by = $2,
+           status = 'read', updated_at = NOW()
+       WHERE id = $3
+       RETURNING *`,
+      [reply, adminId, req.params.id]
+    );
+
+    res.json({ message: 'Reply sent.', query: result.rows[0] });
+  } catch (err) {
+    console.error('Error sending contact query reply:', err);
+    res.status(500).json({ error: 'Failed to send the reply.' });
   }
 });
 
