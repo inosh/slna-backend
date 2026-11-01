@@ -416,6 +416,9 @@ CREATE TABLE IF NOT EXISTS public.contact_queries
     status text COLLATE pg_catalog."default" NOT NULL DEFAULT 'new'::text,
     created_at timestamp with time zone NOT NULL DEFAULT now(),
     updated_at timestamp with time zone NOT NULL DEFAULT now(),
+    admin_reply text COLLATE pg_catalog."default",
+    replied_at timestamp with time zone,
+    replied_by bigint,
     CONSTRAINT contact_queries_pkey PRIMARY KEY (id),
     CONSTRAINT contact_queries_subject_check CHECK (subject = ANY (ARRAY['general'::text, 'feedback'::text, 'membership'::text, 'events'::text, 'other'::text])),
     CONSTRAINT contact_queries_status_check CHECK (status = ANY (ARRAY['new'::text, 'read'::text]))
