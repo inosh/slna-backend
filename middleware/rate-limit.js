@@ -20,4 +20,14 @@ const contactFormLimiter = rateLimit({
   message: { error: 'Too many submissions from this device. Please try again later.' },
 });
 
-module.exports = { loginLimiter, contactFormLimiter };
+// Public membership lookups (status check, find membership number) take
+// only a reference number or NIC, so limit guessing.
+const membershipLookupLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many attempts. Please wait 15 minutes and try again.' },
+});
+
+module.exports = { loginLimiter, contactFormLimiter, membershipLookupLimiter };

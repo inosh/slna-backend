@@ -129,13 +129,19 @@ app.use((err, req, res, next) => {
 });
 
 app.use(function (error, req, res, next) {
-  console.error('Unhandled API error:', error);
+  const statusCode = error.statusCode || 500;
+
+  // 4xx are expected refusals (validation, duplicate application, ...):
+  // one line is enough. Real failures keep the full stack trace.
+  if (statusCode >= 500) {
+    console.error('Unhandled API error:', error);
+  } else {
+    console.warn(`[${statusCode}] ${req.method} ${req.originalUrl}: ${error.message}`);
+  }
 
   if (res.headersSent) {
     return next(error);
   }
-
-  const statusCode = error.statusCode || 500;
 
   return res.status(statusCode).json({
     success: false,

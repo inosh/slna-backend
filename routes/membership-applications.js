@@ -7,13 +7,15 @@ const PDFDocument = require('pdfkit');
 const pool = require('../db/pool');
 
 const { requireAuth } = require('../middleware/auth');
+const { membershipLookupLimiter } = require('../middleware/rate-limit');
+const { normaliseNic, isValidNic, nicVariants, INVALID_NIC_MESSAGE } = require('../lib/nic');
 const {
     putPrivateObject,
     getPrivateObject,
     deletePrivateObject,
     isNotFoundError
 } = require('../lib/r2');
-const { sendMail, SECRETARY_EMAIL, ADMIN_LOGIN_URL, CONTACT_LINE } = require('../lib/mail');
+const { sendMail, SECRETARY_EMAIL, ADMIN_LOGIN_URL, statusPageUrl, contactDetails } = require('../lib/mail');
 
 const router = express.Router();
 
@@ -432,11 +434,29 @@ function sendApplicationReceivedEmail(application) {
             'Thank you for applying for SLNA lifetime membership. ' +
             'Your application has been received and is awaiting review.\n\n' +
             `Reference number: ${referenceNumber}\n\n` +
-            'Please save this reference number -- you will need it to check ' +
-            'your application status from the "Check Status" tab on the ' +
-            'SLNA membership page.\n\n' +
+            'Please save this reference number. You can check your ' +
+            'application status at any time using this reference number ' +
+            `or your NIC:\n${statusPageUrl(referenceNumber)}\n\n` +
             'Regards,\nSri Lanka Nurses Association'
     });
+}
+
+// What an applicant should do next when more information is needed or the
+// application was rejected. The public status check shows the same sentence.
+function applicantFollowUp(application) {
+    const status = application.applicationStatus;
+
+    if (status !== 'more_information_required' && status !== 'rejected') {
+        return null;
+    }
+
+    const contact = contactDetails();
+    const call = contact.phoneDisplay ? `, or call ${contact.phoneDisplay}` : '';
+    const message = status === 'more_information_required'
+        ? `Please reply by email to ${contact.email} quoting your reference number ${application.referenceNumber}${call}.`
+        : `If you have any questions, please email ${contact.email} quoting your reference number ${application.referenceNumber}${call}.`;
+
+    return { message, ...contact };
 }
 
 function sendSecretaryNewApplicationEmail(application) {
@@ -485,13 +505,24 @@ function sendSecretaryApplicationApprovedEmail(application) {
 
     return sendMail({
         to: SECRETARY_EMAIL,
-        subject: `Membership Application Approved - ${application.referenceNumber}`,
+        subject: `Membership Application Approved - ${application.membershipNumber} (${application.referenceNumber})`,
         text:
-            'A lifetime membership application was approved.\n\n' +
+            'A lifetime membership application was approved' +
+            (application.approvedBy ? ` by ${application.approvedBy}` : '') +
+            '.\n\n' +
+            `Membership number assigned: ${application.membershipNumber}\n` +
             `Applicant: ${application.fullName}\n` +
+            `Name with initials: ${application.nameWithInitials || '-'}\n` +
+            `Title: ${application.title || '-'}\n` +
+            `NIC: ${application.nicNumber || '-'}\n` +
             `Email: ${application.emailAddress}\n` +
-            `Reference number: ${application.referenceNumber}\n` +
-            `Membership number assigned: ${application.membershipNumber}\n\n` +
+            `Mobile number: ${application.mobileNumber || '-'}\n` +
+            `Working place: ${application.currentWorkingPlace || '-'}\n` +
+            `Designation: ${application.designation || '-'}\n` +
+            `Reference number: ${application.referenceNumber}\n\n` +
+            'The ID application can now be prepared from the staff admin ' +
+            'dashboard (Membership Applications, "ID Application" tab):\n' +
+            `${ADMIN_LOGIN_URL}\n\n` +
             'Regards,\nSri Lanka Nurses Association'
     });
 }
@@ -512,6 +543,8 @@ function sendApplicationDecisionEmail(application) {
         : 'Please submit a new lifetime membership application after ' +
             'addressing the feedback above.';
 
+    const followUp = applicantFollowUp(application);
+
     return sendMail({
         to: application.emailAddress,
         subject,
@@ -520,9 +553,13 @@ function sendApplicationDecisionEmail(application) {
             `Your SLNA lifetime membership application (reference ${application.referenceNumber}) ` +
             (isRejected ? 'has been rejected.' : 'requires more information.') +
             '\n\n' +
-            (application.statusNote ? `Reason - ${application.statusNote}\n\n` : '') +
-            `${resubmitNote}\n\n` +
-            `${CONTACT_LINE}\n\n` +
+            (application.statusNote
+                ? (isRejected ? 'Reason' : 'Information needed') + ` - ${application.statusNote}\n\n`
+                : '') +
+            (isRejected ? `${resubmitNote}\n\n` : '') +
+            `${followUp.message}\n\n` +
+            'You can check your application status at any time:\n' +
+            `${statusPageUrl(application.referenceNumber)}\n\n` +
             'Regards,\nSri Lanka Nurses Association'
     });
 }
@@ -590,6 +627,10 @@ function validateRequiredFields(body) {
         errors.push('Please enter a valid email address.');
     }
 
+    if (cleanText(body.nicNumber) && !isValidNic(body.nicNumber)) {
+        errors.push(INVALID_NIC_MESSAGE);
+    }
+
     if (!safeDate(body.dateOfBirth)) {
         errors.push('Please provide a valid date of birth.');
     }
@@ -635,6 +676,66 @@ function requireUploadedFiles(files) {
     }
 }
 
+/*
+ * One application per person: refuse a new application when the NIC (old or
+ * new form) already belongs to a member -- an approved application or the
+ * pre-digital lifetime roll -- or to an application still being processed.
+ * A rejected application doesn't block applying again. Checked here rather
+ * than with a database constraint, so no schema change is needed.
+ */
+async function rejectDuplicateApplication(nicNumber) {
+    const variants = nicVariants(nicNumber);
+
+    const member = await pool.query(
+        `
+            SELECT membership_number
+            FROM membership_applications
+            WHERE UPPER(REPLACE(nic_number, ' ', '')) = ANY($1)
+              AND application_status = 'approved'
+            UNION ALL
+            SELECT membership_number
+            FROM legacy_lifetime_members
+            WHERE UPPER(REPLACE(nic_number, ' ', '')) = ANY($1)
+            LIMIT 1
+        `,
+        [variants]
+    );
+
+    if (member.rowCount > 0) {
+        const error = validationError(
+            'You are already an SLNA lifetime member' +
+            (member.rows[0].membership_number
+                ? ` (membership number ${member.rows[0].membership_number})`
+                : '') +
+            '. If you have lost your membership number, use the ' +
+            '"Find My Membership Number" tab.'
+        );
+        error.statusCode = 409;
+        throw error;
+    }
+
+    const open = await pool.query(
+        `
+            SELECT reference_number
+            FROM membership_applications
+            WHERE UPPER(REPLACE(nic_number, ' ', '')) = ANY($1)
+              AND application_status IN ('pending', 'under_review', 'more_information_required')
+            ORDER BY created_at DESC
+            LIMIT 1
+        `,
+        [variants]
+    );
+
+    if (open.rowCount > 0) {
+        const error = validationError(
+            `You already have an application in progress (${open.rows[0].reference_number}). ` +
+            'You can check it on the "Check Status" tab.'
+        );
+        error.statusCode = 409;
+        throw error;
+    }
+}
+
 router.post(
     '/applications',
 
@@ -647,6 +748,7 @@ router.post(
         try {
             validateRequiredFields(req.body);
             requireUploadedFiles(req.files);
+            await rejectDuplicateApplication(req.body.nicNumber);
 
             const referenceNumber = await createUniqueReferenceNumber();
 
@@ -730,7 +832,7 @@ router.post(
                     cleanText(req.body.fullName),
                     cleanText(req.body.nameWithInitials),
                     cleanText(req.body.title),
-                    cleanText(req.body.nicNumber),
+                    normaliseNic(req.body.nicNumber),
                     safeDate(req.body.dateOfBirth),
                     cleanText(req.body.sex),
                     cleanText(req.body.maritalStatus),
@@ -1191,7 +1293,14 @@ router.patch(
                 referenceNumber: updatedApplication.reference_number,
                 membershipNumber: updatedApplication.membership_number,
                 statusNote: updatedApplication.status_note,
-                applicationStatus: updatedApplication.application_status
+                applicationStatus: updatedApplication.application_status,
+                nameWithInitials: updatedApplication.name_with_initials,
+                title: updatedApplication.title,
+                nicNumber: updatedApplication.nic_number,
+                mobileNumber: updatedApplication.mobile_number,
+                currentWorkingPlace: updatedApplication.current_working_place,
+                designation: updatedApplication.designation,
+                approvedBy: req.user && req.user.username ? req.user.username : null
             };
 
             if (status === 'approved') {
@@ -1676,20 +1785,31 @@ router.delete(
     }
 );
 
+/*
+ * Public: check an application by its reference number OR the applicant's
+ * NIC. For an NIC with several applications (reapplied after a rejection),
+ * the latest one is shown.
+ *
+ * GET /api/membership/applications/status/:lookup
+ */
 router.get(
-    '/applications/status/:referenceNumber',
+    '/applications/status/:lookup',
+
+    membershipLookupLimiter,
 
     async function (req, res, next) {
         try {
-            const referenceNumber = cleanText(
-                req.params.referenceNumber
-            ).toUpperCase();
+            const lookup = cleanText(req.params.lookup)
+                .replace(/\s/g, '')
+                .toUpperCase();
 
-            if (!referenceNumber) {
+            if (!lookup) {
                 throw validationError(
-                    'Application reference number is required.'
+                    'Please enter your application reference number or NIC.'
                 );
             }
+
+            const isReference = lookup.startsWith('SLNA-');
 
             const result = await pool.query(
                 `
@@ -1704,16 +1824,21 @@ router.get(
                         approved_at,
                         rejected_at
                     FROM membership_applications
-                    WHERE reference_number = $1
+                    WHERE ${isReference
+                        ? 'reference_number = $1'
+                        : 'UPPER(REPLACE(nic_number, \' \', \'\')) = ANY($1)'}
+                    ORDER BY created_at DESC
+                    LIMIT 1
                 `,
-                [referenceNumber]
+                [isReference ? lookup : nicVariants(lookup)]
             );
 
             if (result.rowCount === 0) {
                 return res.status(404).json({
                     success: false,
                     message:
-                        'No membership application was found for that reference number.'
+                        'No membership application matches that reference number or NIC. ' +
+                        'Please check it and try again.'
                 });
             }
 
@@ -1727,6 +1852,10 @@ router.get(
                     status: application.application_status,
                     membershipNumber: application.membership_number,
                     statusNote: application.status_note,
+                    followUp: applicantFollowUp({
+                        applicationStatus: application.application_status,
+                        referenceNumber: application.reference_number
+                    }),
                     submittedAt: application.created_at,
                     reviewedAt: application.reviewed_at,
                     approvedAt: application.approved_at,
@@ -1739,70 +1868,47 @@ router.get(
     }
 );
 
-// Sri Lankan mobile numbers may be entered as 0XXXXXXXXX or +94XXXXXXXXX
-// (locally, vs. the registration form, vs. years apart) -- strip everything
-// down to the bare 9-digit subscriber number so both forms compare equal.
-function normalizeMobileNumber(value) {
-    const digits = String(value || '').replace(/[^0-9]/g, '');
-
-    if (digits.startsWith('94') && digits.length === 11) {
-        return digits.slice(2);
-    }
-
-    if (digits.startsWith('0') && digits.length === 10) {
-        return digits.slice(1);
-    }
-
-    return digits;
-}
-
 /*
- * Public: look up a membership number using NIC + mobile number, for
- * applicants who have lost their application reference number.
- * Only matches an approved application with a membership number assigned.
- * Deliberately returns the same generic "not found" message regardless of
- * which field didn't match, so this can't be used to enumerate valid NICs.
+ * Public: look up a membership number using the NIC, for applicants who
+ * have lost their application reference number. Only matches an approved
+ * application with a membership number assigned.
  *
  * POST /api/membership/find-membership-number
  */
 router.post(
     '/find-membership-number',
 
+    membershipLookupLimiter,
+
     async function (req, res, next) {
         try {
-            const nic = cleanText(req.body.nic).toUpperCase();
-            const mobile = cleanText(req.body.mobileNumber);
+            const nic = cleanText(req.body.nic).replace(/s/g, '').toUpperCase();
 
-            if (!nic || !mobile) {
-                throw validationError(
-                    'NIC and mobile number are both required.'
-                );
+            if (!nic) {
+                throw validationError('NIC is required.');
             }
-
-            const normalizedInputMobile = normalizeMobileNumber(mobile);
 
             const result = await pool.query(
                 `
-                    SELECT full_name, membership_number, mobile_number
+                    SELECT full_name, membership_number
                     FROM membership_applications
-                    WHERE UPPER(nic_number) = $1
+                    WHERE UPPER(REPLACE(nic_number, ' ', '')) = ANY($1)
                       AND application_status = 'approved'
                       AND membership_number IS NOT NULL
+                    ORDER BY approved_at DESC NULLS LAST
+                    LIMIT 1
                 `,
-                [nic]
+                [nicVariants(nic)]
             );
 
-            const match = result.rows.find(function (row) {
-                return normalizeMobileNumber(row.mobile_number) === normalizedInputMobile;
-            });
+            const match = result.rows[0];
 
             if (!match) {
                 return res.status(404).json({
                     success: false,
                     message:
-                        'No approved membership was found matching those details. ' +
-                        'Please double-check your NIC and mobile number, or ' +
-                        'contact SLNA for assistance.'
+                        'No approved membership was found for that NIC. ' +
+                        'Please double-check it, or contact SLNA for assistance.'
                 });
             }
 
