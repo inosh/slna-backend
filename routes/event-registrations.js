@@ -7,8 +7,9 @@ const router = express.Router();
 const db = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
 const { uploadEventPayment } = require('../middleware/upload');
-const { getPrivateObject, isNotFoundError } = require('../lib/r2');
+const { getPrivateObject, deletePrivateObject, isNotFoundError } = require('../lib/r2');
 const { sendMail, SECRETARY_EMAIL, ADMIN_LOGIN_URL, CONTACT_LINE } = require('../lib/mail');
+const { normaliseNic, isValidNic, nicVariants, INVALID_NIC_MESSAGE } = require('../lib/nic');
 
 const RECEIPT_STORAGE_PREFIX = 'event-registrations/';
 
@@ -97,6 +98,14 @@ async function fetchRegistrationsForExport(category, eventId, status) {
 // Receipts live in the private R2 bucket, so what gets stored is the bare
 // object key (not a public URL) -- served later through the authenticated
 // GET /:id/receipt route below.
+// The receipt is stored before the handler runs; remove it again when the
+// registration is turned away so no orphan file is left behind.
+function discardReceipt(file) {
+  if (file && file.key) {
+    deletePrivateObject(file.key).catch(function () {});
+  }
+}
+
 function receiptUploadUrl(file) {
   return file ? file.key : null;
 }
@@ -198,6 +207,10 @@ function validateRegistrationInput(body, isFree) {
     if (!String(body[field] || '').trim()) {
       return { error: field + ' is required.' };
     }
+  }
+
+  if (!isValidNic(body.nic)) {
+    return { error: INVALID_NIC_MESSAGE };
   }
 
   if (!REGISTRANT_TYPES.has(body.registrant_type)) {
@@ -319,6 +332,7 @@ router.post(
       const validation = validateRegistrationInput(req.body, isFree);
 
       if (validation.error) {
+        discardReceipt(req.file);
         return res.status(400).json({ error: validation.error });
       }
 
@@ -328,6 +342,27 @@ router.post(
 
       if (!isFree && !req.file) {
         return res.status(400).json({ error: 'A bank receipt file is required.' });
+      }
+
+      // One registration per person per event (old or new form of the NIC).
+      // A rejected registration doesn't count, so they can register again.
+      // Checked here rather than with a database constraint.
+      const existing = await db.query(
+        `SELECT id FROM event_registrations
+          WHERE event_category = $1
+            AND event_id = $2
+            AND UPPER(REPLACE(nic, ' ', '')) = ANY($3)
+            AND status <> 'Rejected'
+          LIMIT 1`,
+        [category, event.id, nicVariants(req.body.nic)]
+      );
+
+      if (existing.rowCount > 0) {
+        discardReceipt(req.file);
+        return res.status(409).json({
+          error: 'This NIC is already registered for this event. ' +
+              'If you need to change it, please contact the SLNA office.'
+        });
       }
 
       if (!isFree && category === 'cpd') {
@@ -383,7 +418,7 @@ router.post(
         req.body.registrant_type.trim(),
         isFree ? 0 : Number(req.body.paid_amount),
         req.body.registrant_type === 'Member' ? req.body.membership_number.trim() : null,
-        req.body.nic.trim(),
+        normaliseNic(req.body.nic),
         req.body.full_name.trim(),
         String(req.body.slnc_registration_number || '').trim() || null,
         req.body.email.trim(),
