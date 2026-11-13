@@ -24,6 +24,20 @@ router.get('/', async (req, res) => {
       GROUP BY a.id
       ORDER BY a.event_date DESC, a.created_at DESC
     `);
+
+    // ?include=photos adds each album's photos and videos, for the
+    // gallery's "All" view (one request instead of one per album).
+    if (req.query.include === 'photos' && result.rows.length) {
+      const photos = await pool.query(
+        'SELECT id, album_id, photo_url, media_type, display_order FROM album_photos ORDER BY album_id, display_order ASC, id ASC'
+      );
+      const byAlbum = {};
+      photos.rows.forEach((photo) => {
+        (byAlbum[photo.album_id] = byAlbum[photo.album_id] || []).push(photo);
+      });
+      result.rows.forEach((album) => { album.photos = byAlbum[album.id] || []; });
+    }
+
     res.json(result.rows);
   } catch (err) {
     console.error('Error fetching albums:', err);
@@ -111,6 +125,69 @@ router.patch('/:id', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('Error updating album:', err);
     res.status(500).json({ error: 'Failed to update album.' });
+  }
+});
+
+// POST /api/albums/:id/photos - add photos/videos to an existing album (PROTECTED)
+// New items go after the existing ones, in the order they were selected.
+router.post('/:id/photos', requireAuth, uploadAlbumPhotos.array('photos', 40), async (req, res) => {
+  const files = req.files || [];
+  const discardFiles = () => Promise.all(files.map((file) =>
+    deletePublicObject(file.key).catch(() => {})
+  ));
+
+  try {
+    const album = await pool.query('SELECT id FROM albums WHERE id = $1', [req.params.id]);
+    if (album.rows.length === 0) {
+      await discardFiles();
+      return res.status(404).json({ error: 'Album not found.' });
+    }
+    if (files.length === 0) {
+      return res.status(400).json({ error: 'Please choose at least one photo or video.' });
+    }
+
+    const { rows: [{ max }] } = await pool.query(
+      'SELECT COALESCE(MAX(display_order), -1) AS max FROM album_photos WHERE album_id = $1',
+      [req.params.id]
+    );
+
+    const inserted = [];
+    for (const [index, file] of files.entries()) {
+      const row = await pool.query(
+        'INSERT INTO album_photos (album_id, photo_url, media_type, display_order) VALUES ($1, $2, $3, $4) RETURNING *',
+        [req.params.id, `/uploads/${file.key}`, file.mimetype.startsWith('video/') ? 'video' : 'image', Number(max) + 1 + index]
+      );
+      inserted.push(row.rows[0]);
+    }
+
+    res.status(201).json({ message: 'Added to album.', photos: inserted });
+  } catch (err) {
+    await discardFiles();
+    console.error('Error adding album photos:', err);
+    res.status(500).json({ error: 'Failed to add photos to the album.' });
+  }
+});
+
+// DELETE /api/albums/photos/:photoId - remove one photo/video from an album (PROTECTED)
+router.delete('/photos/:photoId', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'DELETE FROM album_photos WHERE id = $1 RETURNING *',
+      [req.params.photoId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Photo not found.' });
+    }
+
+    const key = result.rows[0].photo_url.replace(/^\/uploads\//, '');
+    deletePublicObject(key).catch((deleteErr) => {
+      console.error('Could not delete R2 object for album photo:', key, deleteErr.message);
+    });
+
+    res.json({ message: 'Photo deleted.', deleted: result.rows[0] });
+  } catch (err) {
+    console.error('Error deleting album photo:', err);
+    res.status(500).json({ error: 'Failed to delete the photo.' });
   }
 });
 
