@@ -106,12 +106,12 @@ const receiptFilter = (req, file, cb) => {
   else cb(new Error('Only PDF, JPEG, or PNG files are allowed for payment receipts.'));
 };
 
-// News create/update: "photo" (cover) stays image-only, "photos" (gallery,
+// News create/update: "photo" (cover) is a photo or a video, "photos" (gallery,
 // becomes a linked album) accepts photos and videos like the standalone
 // Gallery album uploads do, and "content_images" (images pulled out of the
 // Full Content editor's embedded base64 images on publish) is image-only.
 const newsPhotoFilter = (req, file, cb) => {
-  if (file.fieldname === 'photo') return imageFilter(req, file, cb);
+  if (file.fieldname === 'photo') return albumMediaFilter(req, file, cb);
   if (file.fieldname === 'photos') return albumMediaFilter(req, file, cb);
   if (file.fieldname === 'content_images') return imageFilter(req, file, cb);
   cb(new Error('Unexpected upload field.'));
@@ -124,12 +124,12 @@ const uploadNewsPhoto = multer({
 });
 
 // News create/update: the "document" field (typed .txt/.pdf/.docx) needs the
-// document filter, "photo" (cover) is image-only, and "photos" (gallery,
+// document filter, "photo" (cover) is a photo or a video, and "photos" (gallery,
 // becomes a linked album) accepts photos and videos -- route each field to
 // the right filter by name.
 const newsUploadFilter = (req, file, cb) => {
   if (file.fieldname === 'document') return documentFilter(req, file, cb);
-  if (file.fieldname === 'photo') return imageFilter(req, file, cb);
+  if (file.fieldname === 'photo') return albumMediaFilter(req, file, cb);
   if (file.fieldname === 'photos') return albumMediaFilter(req, file, cb);
   cb(new Error('Unexpected upload field.'));
 };
