@@ -8,7 +8,9 @@
     "dev": "nodemon server.js",
     "create-admin": "node db/create-admin.js",
     "backup": "node db/backup-to-r2.js",
-    "download-backup": "node db/download-backup.js"
+    "download-backup": "node db/download-backup.js",
+    "reminders": "node db/run-reminders.js",
+    "migrate:membership": "node db/migrate-membership-categories.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1145.0",

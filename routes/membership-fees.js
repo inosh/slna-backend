@@ -4,16 +4,23 @@ const router = express.Router();
 const db = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
 
-const FEE_KEYS = new Set(['associate', 'lifetime', 'upgrade']);
+// "upgrade" is the old Associate -> Lifetime fee: kept so the current site
+// keeps working during the rollout, but upgrades now cost the full fee of
+// the new category (less any loyalty discount, see Membership Settings).
+const FEE_KEYS = new Set(['associate', 'lifetime', 'general', 'upgrade']);
+const KEY_CATEGORY = { lifetime: 'LT', general: 'GM', associate: 'AM' };
+const KEY_ORDER = { lifetime: 1, general: 2, associate: 3, upgrade: 4 };
 
 function normaliseFee(row) {
   return {
     key: row.key,
+    category: KEY_CATEGORY[row.key] || null,
     label: row.label,
     // amount is NOT NULL in the DB (see schema.sql) -- null is only ever
     // surfaced here, as the frontend's "to be announced" signal.
     amount: row.is_tba ? null : Number(row.amount),
     is_tba: row.is_tba,
+    is_annual: Boolean(row.is_annual),
     updated_at: row.updated_at
   };
 }
@@ -35,7 +42,11 @@ router.get('/', async function (req, res) {
     const result = await db.query(
       'SELECT * FROM membership_fee_settings ORDER BY key'
     );
-    return res.json(result.rows.map(normaliseFee));
+    return res.json(
+      result.rows
+        .map(normaliseFee)
+        .sort((a, b) => (KEY_ORDER[a.key] || 9) - (KEY_ORDER[b.key] || 9))
+    );
   } catch (error) {
     console.error('Could not load membership fees:', error);
     return res.status(500).json({ error: 'Could not load membership fees.' });
