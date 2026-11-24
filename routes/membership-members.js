@@ -380,6 +380,17 @@ router.put('/members/:id', async (req, res, next) => {
       if (v && !isDate(v)) throw M.badRequest('Member since must be a valid date.');
       extraCols.push('joined_on');
       extraVals.push(v);
+
+      // Never upgraded: the time in this category (used for the upgrade
+      // loyalty discount) is the whole membership, so it follows Member
+      // Since. After an upgrade it stays the upgrade date.
+      const upgraded = (await client.query(
+        "SELECT 1 FROM retired_membership_numbers WHERE member_id = $1 AND reason = 'upgrade' LIMIT 1", [member.id]
+      )).rows[0];
+      if (v && !upgraded) {
+        extraCols.push('category_since');
+        extraVals.push(v);
+      }
     }
     if ('validUntil' in req.body && M.isAnnual(member.category)) {
       const v = clean(req.body.validUntil);
@@ -682,7 +693,8 @@ router.get('/renewals', async (req, res, next) => {
       where = 'WHERE r.status = $1';
     }
     const rows = (await pool.query(
-      `SELECT r.*, m.membership_number, m.full_name, m.name_with_initials, u.username AS reviewed_by_name
+      `SELECT r.*, m.membership_number, m.full_name, m.name_with_initials, u.username AS reviewed_by_name,
+              m.category_since AS member_category_since, m.joined_on AS member_joined_on
          FROM renewal_requests r
          JOIN members m ON m.id = r.member_id
          LEFT JOIN users u ON u.id = r.reviewed_by
@@ -690,7 +702,36 @@ router.get('/renewals', async (req, res, next) => {
         ORDER BY r.created_at DESC LIMIT 300`,
       params
     )).rows;
-    res.json({ success: true, renewals: rows.map(renewalToJson) });
+
+    // Pending upgrades: what the current fee and loyalty tiers give for this
+    // member on the day they submitted, so the admin can check the amount
+    // without working it out. (Until verified the member is still in the
+    // old category, so category_since is the start of that category.)
+    const pendingUpgrades = rows.some((r) => r.status === 'pending' && r.kind === 'upgrade');
+    const fees = pendingUpgrades ? await M.loadFees() : null;
+    const settings = pendingUpgrades ? await M.loadSettings() : null;
+
+    res.json({
+      success: true,
+      renewals: rows.map((row) => {
+        const json = renewalToJson(row);
+        if (row.status === 'pending' && row.kind === 'upgrade') {
+          const since = M.toDateString(row.member_category_since || row.member_joined_on);
+          const quote = M.upgradeQuote(
+            { category: row.from_category, category_since: since },
+            row.to_category, fees, settings, M.toDateString(row.created_at)
+          );
+          json.discountCheck = {
+            categorySince: since,
+            years: quote.years,
+            fullFee: quote.base,
+            expectedDiscount: quote.discount,
+            expectedAmount: quote.amount,
+          };
+        }
+        return json;
+      }),
+    });
   } catch (err) {
     next(err);
   }
