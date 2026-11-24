@@ -16,8 +16,40 @@ const {
     isNotFoundError
 } = require('../lib/r2');
 const { sendMail, SECRETARY_EMAIL, ADMIN_LOGIN_URL, statusPageUrl, contactDetails } = require('../lib/mail');
+const M = require('../lib/membership');
 
 const router = express.Router();
+
+// Membership types accepted on applications (membership_applications.membership_type).
+const MEMBERSHIP_TYPES = ['lifetime', 'ordinary', 'associate'];
+
+function membershipTypeOf(value) {
+    const type = cleanText(value).toLowerCase();
+    return MEMBERSHIP_TYPES.includes(type) ? type : null;
+}
+
+// "lifetime" -> "Lifetime Membership"
+function membershipLabel(type) {
+    return M.CATEGORIES[M.TYPE_TO_CATEGORY[type] || 'LT'];
+}
+
+// "An Ordinary Membership", "An Associate Membership", "A Lifetime Membership"
+function withArticle(label) {
+    return (/^[AEIOU]/i.test(label) ? 'An ' : 'A ') + label;
+}
+
+// Associate membership is for students: no job / SLNC details, but a
+// student number and the date they registered at the nursing school.
+const isStudentType = (type) => type === 'associate';
+
+// "2027-11-24" -> "24 November 2027"
+function formatLongDate(value) {
+    const dateStr = M.toDateString(value);
+    if (!dateStr) return '';
+    return new Date(dateStr + 'T00:00:00Z').toLocaleDateString('en-GB', {
+        day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC'
+    });
+}
 
 const PRIVATE_STORAGE_PREFIX = 'membership-applications/';
 
@@ -327,6 +359,13 @@ function applicationToAdminJson(application) {
         higherEducationalQualification:
         application.higher_educational_qualification,
 
+        studentNumber: application.student_number,
+        instituteRegistrationDate: application.institute_registration_date,
+
+        category: M.TYPE_TO_CATEGORY[application.membership_type] || 'LT',
+        paymentAmount: application.payment_amount,
+        joinedOn: application.joined_on,
+
         paymentReference: application.payment_reference,
         transferDate: application.transfer_date,
 
@@ -384,7 +423,8 @@ function deleteUploadedFiles(files) {
         });
 }
 
-function createReferenceNumber() {
+// SLNA-LT-20261124-AB12CD34 / SLNA-OM-... / SLNA-AM-...
+function createReferenceNumber(category) {
     const date = new Date();
 
     const year = date.getFullYear();
@@ -396,12 +436,12 @@ function createReferenceNumber() {
         .toString('hex')
         .toUpperCase();
 
-    return `SLNA-LT-${year}${month}${day}-${randomPart}`;
+    return `SLNA-${category || 'LT'}-${year}${month}${day}-${randomPart}`;
 }
 
-async function createUniqueReferenceNumber() {
+async function createUniqueReferenceNumber(category) {
     for (let attempt = 0; attempt < 10; attempt += 1) {
-        const referenceNumber = createReferenceNumber();
+        const referenceNumber = createReferenceNumber(category);
 
         const result = await pool.query(
             `
@@ -431,7 +471,7 @@ function sendApplicationReceivedEmail(application) {
         subject: `SLNA Membership Application Received - ${referenceNumber}`,
         text:
             `Dear ${fullName},\n\n` +
-            'Thank you for applying for SLNA lifetime membership. ' +
+            `Thank you for applying for SLNA ${membershipLabel(application.membershipType)}. ` +
             'Your application has been received and is awaiting review.\n\n' +
             `Reference number: ${referenceNumber}\n\n` +
             'Please save this reference number. You can check your ' +
@@ -466,15 +506,17 @@ function sendSecretaryNewApplicationEmail(application) {
 
     return sendMail({
         to: SECRETARY_EMAIL,
-        subject: `New SLNA Lifetime Membership Application - ${application.referenceNumber}`,
+        subject: `New SLNA ${membershipLabel(application.membershipType)} Application - ${application.referenceNumber}`,
         text:
-            'A new lifetime membership application was submitted.\n\n' +
+            `A new ${membershipLabel(application.membershipType)} application was submitted.\n\n` +
+            `Category: ${membershipLabel(application.membershipType)}\n` +
+            (application.paymentAmount != null ? `Fee: LKR ${Number(application.paymentAmount).toLocaleString('en-LK')}\n` : '') +
             `Applicant: ${application.fullName}\n` +
             `Title: ${application.title}\n` +
             `NIC: ${application.nicNumber}\n` +
             `Email: ${application.emailAddress}\n` +
             `Mobile number: ${application.mobileNumber}\n` +
-            `Working place: ${application.currentWorkingPlace}\n` +
+            `${isStudentType(application.membershipType) ? 'Nursing school / university' : 'Working place'}: ${application.currentWorkingPlace}\n` +
             `Reference number: ${application.referenceNumber}\n\n` +
             'Please log in to the staff admin dashboard to review this ' +
             `application:\n${ADMIN_LOGIN_URL}\n\n` +
@@ -487,12 +529,18 @@ function sendApplicationApprovedEmail(application) {
 
     return sendMail({
         to: application.emailAddress,
-        subject: `SLNA Lifetime Membership Approved - ${application.referenceNumber}`,
+        subject: `SLNA ${membershipLabel(application.membershipType)} Approved - ${application.referenceNumber}`,
         text:
             `Dear ${fullName},\n\n` +
-            'Congratulations! Your SLNA lifetime membership application ' +
+            `Congratulations! Your SLNA ${membershipLabel(application.membershipType)} application ` +
             '(reference ' + application.referenceNumber + ') has been approved.\n\n' +
-            `Your membership number: ${application.membershipNumber}\n\n` +
+            `Your membership number: ${application.membershipNumber}\n` +
+            (application.validUntil
+                ? `Valid until: ${formatLongDate(application.validUntil)}\n\n` +
+                  'This is an annual membership. We will email you before it is ' +
+                  'due for renewal, and you can renew online at any time:\n' +
+                  `${M.siteUrl()}/pages/renew-membership.html\n\n`
+                : 'Valid for life.\n\n') +
             'Please keep this membership number for your records.\n\n' +
             'Regards,\nSri Lanka Nurses Association'
     });
@@ -507,18 +555,23 @@ function sendSecretaryApplicationApprovedEmail(application) {
         to: SECRETARY_EMAIL,
         subject: `Membership Application Approved - ${application.membershipNumber} (${application.referenceNumber})`,
         text:
-            'A lifetime membership application was approved' +
+            `${withArticle(membershipLabel(application.membershipType))} application was approved` +
             (application.approvedBy ? ` by ${application.approvedBy}` : '') +
             '.\n\n' +
             `Membership number assigned: ${application.membershipNumber}\n` +
+            `Category: ${membershipLabel(application.membershipType)}\n` +
+            (application.validUntil ? `Valid until: ${formatLongDate(application.validUntil)}\n` : 'Valid for life\n') +
             `Applicant: ${application.fullName}\n` +
             `Name with initials: ${application.nameWithInitials || '-'}\n` +
             `Title: ${application.title || '-'}\n` +
             `NIC: ${application.nicNumber || '-'}\n` +
             `Email: ${application.emailAddress}\n` +
             `Mobile number: ${application.mobileNumber || '-'}\n` +
-            `Working place: ${application.currentWorkingPlace || '-'}\n` +
-            `Designation: ${application.designation || '-'}\n` +
+            (isStudentType(application.membershipType)
+                ? `Nursing school / university: ${application.currentWorkingPlace || '-'}\n` +
+                  `Student number: ${application.studentNumber || '-'}\n`
+                : `Working place: ${application.currentWorkingPlace || '-'}\n` +
+                  `Designation: ${application.designation || '-'}\n`) +
             `Reference number: ${application.referenceNumber}\n\n` +
             'The ID application can now be prepared from the staff admin ' +
             'dashboard (Membership Applications, "ID Application" tab):\n' +
@@ -533,15 +586,14 @@ function sendApplicationDecisionEmail(application) {
     const fullName = cleanText(application.fullName);
     const isRejected = application.applicationStatus === 'rejected';
 
+    const label = membershipLabel(application.membershipType);
+
     const subject = isRejected
-        ? `SLNA Lifetime Membership Application Rejected - ${application.referenceNumber}`
+        ? `SLNA ${label} Application Rejected - ${application.referenceNumber}`
         : `More Information Required for Your SLNA Membership Application - ${application.referenceNumber}`;
 
-    const resubmitNote = isRejected
-        ? 'If you wish to apply again, please submit a new lifetime ' +
-            'membership application after addressing the feedback above.'
-        : 'Please submit a new lifetime membership application after ' +
-            'addressing the feedback above.';
+    const resubmitNote = 'If you wish to apply again, please submit a new ' +
+        'membership application after addressing the feedback above.';
 
     const followUp = applicantFollowUp(application);
 
@@ -550,7 +602,7 @@ function sendApplicationDecisionEmail(application) {
         subject,
         text:
             `Dear ${fullName},\n\n` +
-            `Your SLNA lifetime membership application (reference ${application.referenceNumber}) ` +
+            `Your SLNA ${label} application (reference ${application.referenceNumber}) ` +
             (isRejected ? 'has been rejected.' : 'requires more information.') +
             '\n\n' +
             (application.statusNote
@@ -574,6 +626,10 @@ function validationError(message, details) {
 }
 
 function validateRequiredFields(body) {
+    // Older forms didn't send a type: those are Lifetime applications.
+    const type = cleanText(body.membershipType) ? membershipTypeOf(body.membershipType) : 'lifetime';
+    const student = isStudentType(type);
+
     const requiredFields = [
         ['fullName', 'Full name is required.'],
         ['nameWithInitials', 'Name with initials is required.'],
@@ -583,19 +639,31 @@ function validateRequiredFields(body) {
         ['sex', 'Sex is required.'],
         ['maritalStatus', 'Marital status is required.'],
         ['permanentAddress', 'Permanent address is required.'],
-        ['currentWorkingPlace', 'Current working place is required.'],
-        ['officialAddress', 'Official address is required.'],
+        ['currentWorkingPlace', student
+            ? 'Current nursing school / university is required.'
+            : 'Current working place is required.'],
         ['mobileNumber', 'Mobile number is required.'],
         ['emailAddress', 'Email address is required.'],
-        ['designation', 'Designation is required.'],
-        ['firstAppointmentDate', 'First appointment date is required.'],
-        ['firstAppointmentPlace', 'First appointment place is required.'],
         ['nursingSchool', 'Nursing school / university is required.'],
         ['batch', 'Batch is required.'],
         ['declaration', 'You must confirm the declaration.']
-    ];
+    ].concat(student
+        ? [
+            ['studentNumber', 'Student number is required.'],
+            ['instituteRegistrationDate', 'The date you registered at the nursing school is required.']
+        ]
+        : [
+            ['officialAddress', 'Official address is required.'],
+            ['designation', 'Designation is required.'],
+            ['firstAppointmentDate', 'First appointment date is required.'],
+            ['firstAppointmentPlace', 'First appointment place is required.']
+        ]);
 
     const errors = [];
+
+    if (!type) {
+        errors.push('Please choose a membership category.');
+    }
 
     requiredFields.forEach(function ([field, message]) {
         if (!cleanText(body[field])) {
@@ -635,7 +703,7 @@ function validateRequiredFields(body) {
         errors.push('Please provide a valid date of birth.');
     }
 
-    if (hasSlncRegistration(body)) {
+    if (!student && hasSlncRegistration(body)) {
         if (!cleanText(body.slncRegistrationNumber)) {
             errors.push('SLNC registration number is required.');
         }
@@ -645,8 +713,12 @@ function validateRequiredFields(body) {
         }
     }
 
-    if (!safeDate(body.firstAppointmentDate)) {
+    if (!student && cleanText(body.firstAppointmentDate) && !safeDate(body.firstAppointmentDate)) {
         errors.push('Please provide a valid first appointment date.');
+    }
+
+    if (student && cleanText(body.instituteRegistrationDate) && !safeDate(body.instituteRegistrationDate)) {
+        errors.push('Please provide a valid nursing school registration date.');
     }
 
     if (errors.length > 0) {
@@ -686,29 +758,27 @@ function requireUploadedFiles(files) {
 async function rejectDuplicateApplication(nicNumber) {
     const variants = nicVariants(nicNumber);
 
+    // Any member, in any category (the members table holds approved
+    // applications and the legacy lifetime roll).
     const member = await pool.query(
         `
-            SELECT membership_number
-            FROM membership_applications
+            SELECT membership_number, category, is_active
+            FROM members
             WHERE UPPER(REPLACE(nic_number, ' ', '')) = ANY($1)
-              AND application_status = 'approved'
-            UNION ALL
-            SELECT membership_number
-            FROM legacy_lifetime_members
-            WHERE UPPER(REPLACE(nic_number, ' ', '')) = ANY($1)
+            ORDER BY is_active DESC
             LIMIT 1
         `,
         [variants]
     );
 
     if (member.rowCount > 0) {
+        const found = member.rows[0];
         const error = validationError(
-            'You are already an SLNA lifetime member' +
-            (member.rows[0].membership_number
-                ? ` (membership number ${member.rows[0].membership_number})`
-                : '') +
-            '. If you have lost your membership number, use the ' +
-            '"Find My Membership Number" tab.'
+            `You are already an SLNA member (${M.CATEGORIES[found.category]}, ` +
+            `membership number ${found.membership_number}). ` +
+            (found.category === 'LT'
+                ? 'If you have lost your membership number, use the "Find My Membership Number" tab.'
+                : 'To renew or upgrade your membership, please use the Renew Membership page.')
         );
         error.statusCode = 409;
         throw error;
@@ -750,7 +820,13 @@ router.post(
             requireUploadedFiles(req.files);
             await rejectDuplicateApplication(req.body.nicNumber);
 
-            const referenceNumber = await createUniqueReferenceNumber();
+            const membershipType = membershipTypeOf(req.body.membershipType) || 'lifetime';
+            const category = M.TYPE_TO_CATEGORY[membershipType];
+            const student = isStudentType(membershipType);
+            const fees = await M.loadFees();
+            const paymentAmount = fees[category] ? fees[category].amount : null;
+
+            const referenceNumber = await createUniqueReferenceNumber(category);
 
             const receipt = req.files.paymentReceipt[0];
             const photo = req.files.idPhoto[0];
@@ -802,10 +878,14 @@ router.post(
                         id_photo_path,
                         id_photo_original_name,
 
+                        student_number,
+                        institute_registration_date,
+                        payment_amount,
+
                         declaration_confirmed
                     )
                     VALUES (
-                               $1, 'lifetime', 'pending',
+                               $1, $34, 'pending',
 
                                $2, $3, $4, $5, $6, $7, $8,
 
@@ -818,6 +898,8 @@ router.post(
                                $27, $28,
 
                                $29, $30,
+
+                               $31, $32, $33,
 
                                TRUE
                            )
@@ -839,18 +921,18 @@ router.post(
 
                     cleanText(req.body.permanentAddress),
                     cleanText(req.body.currentWorkingPlace),
-                    cleanText(req.body.officialAddress) || null,
+                    student ? null : cleanText(req.body.officialAddress) || null,
                     cleanText(req.body.mobileNumber),
                     cleanText(req.body.whatsappNumber) || null,
                     cleanText(req.body.residentialNumber) || null,
                     cleanText(req.body.officeNumber) || null,
                     cleanText(req.body.emailAddress).toLowerCase(),
 
-                    hasSlncRegistration(req.body) ? cleanText(req.body.slncRegistrationNumber) : null,
-                    hasSlncRegistration(req.body) ? safeDate(req.body.slncRegistrationDate) : null,
-                    cleanText(req.body.designation),
-                    safeDate(req.body.firstAppointmentDate),
-                    cleanText(req.body.firstAppointmentPlace) || null,
+                    !student && hasSlncRegistration(req.body) ? cleanText(req.body.slncRegistrationNumber) : null,
+                    !student && hasSlncRegistration(req.body) ? safeDate(req.body.slncRegistrationDate) : null,
+                    student ? null : cleanText(req.body.designation),
+                    student ? null : safeDate(req.body.firstAppointmentDate),
+                    student ? null : cleanText(req.body.firstAppointmentPlace) || null,
                     cleanText(req.body.nursingSchool) || null,
                     cleanText(req.body.batch) || null,
                     cleanText(req.body.higherEducationalQualification) || null,
@@ -862,7 +944,12 @@ router.post(
                     receipt.originalname,
 
                     photo.key,
-                    photo.originalname
+                    photo.originalname,
+
+                    student ? cleanText(req.body.studentNumber) : null,
+                    student ? safeDate(req.body.instituteRegistrationDate) : null,
+                    paymentAmount,
+                    membershipType
                 ]
             );
 
@@ -873,7 +960,9 @@ router.post(
                 title: cleanText(req.body.title),
                 nicNumber: cleanText(req.body.nicNumber),
                 mobileNumber: cleanText(req.body.mobileNumber),
-                currentWorkingPlace: cleanText(req.body.currentWorkingPlace)
+                currentWorkingPlace: cleanText(req.body.currentWorkingPlace),
+                membershipType,
+                paymentAmount
             };
 
             sendApplicationReceivedEmail(emailApplication);
@@ -882,7 +971,9 @@ router.post(
             return res.status(201).json({
                 success: true,
                 message:
-                    'Your lifetime membership application has been received and is awaiting review.',
+                    `Your ${membershipLabel(membershipType)} application has been received and is awaiting review.`,
+                membershipType,
+                category,
                 referenceNumber: result.rows[0].reference_number,
                 status: result.rows[0].application_status,
                 submittedAt: result.rows[0].created_at
@@ -960,6 +1051,11 @@ router.get(
                         payment_reference,
                         transfer_date,
 
+                        student_number,
+                        institute_registration_date,
+                        payment_amount,
+                        joined_on,
+
                         status_note,
                         admin_note,
 
@@ -1001,17 +1097,12 @@ router.get(
  * stays editable, since numbering gaps/corrections are an admin call, not
  * something this endpoint should enforce.
  *
- * Only "LT <n>" style numbers (the current numbering scheme) count toward
- * the suggestion -- legacy_lifetime_members also holds old pre-digital
- * numbers in a handful of other formats (e.g. "W 266", "K 293/1994") that
- * aren't part of this sequence and would corrupt the "highest n" lookup.
+ * Each category has its own series: "LT n" (continuing the existing
+ * Lifetime numbers), "OM n" and "AM n". Old pre-digital numbers in other
+ * formats (e.g. "W 266") don't count, and numbers reserved after an upgrade
+ * are never suggested again (see lib/membership.js suggestMembershipNumber).
  *
- * The suggested number is also checked against both tables before being
- * returned, in case something outside this scheme (e.g. a manually typed
- * number) already claimed it -- if so, the search keeps incrementing until
- * it finds one that's actually free.
- *
- * GET /api/membership/admin/next-membership-number
+ * GET /api/membership/admin/next-membership-number?category=OM
  */
 router.get(
     '/admin/next-membership-number',
@@ -1020,48 +1111,16 @@ router.get(
 
     async function (req, res, next) {
         try {
-            const maxResult = await pool.query(`
-                SELECT MAX(n) AS max_n FROM (
-                    SELECT (regexp_match(membership_number, '^LT\\s*([0-9]+)$', 'i'))[1]::int AS n
-                    FROM membership_applications
-                    WHERE membership_number ~* '^LT\\s*[0-9]+$'
-
-                    UNION ALL
-
-                    SELECT (regexp_match(membership_number, '^LT\\s*([0-9]+)$', 'i'))[1]::int AS n
-                    FROM legacy_lifetime_members
-                    WHERE membership_number ~* '^LT\\s*[0-9]+$'
-                ) matches
-            `);
-
-            let candidate = (maxResult.rows[0].max_n || 0) + 1;
-            let membershipNumber = 'LT ' + candidate;
-
-            // Re-check availability directly, in case the candidate was
-            // already claimed by a manually entered number outside the
-            // "LT <n>" sequence this lookup follows.
-            for (let attempts = 0; attempts < 1000; attempts++) {
-                const collisionResult = await pool.query(
-                    `
-                        SELECT 1 FROM membership_applications WHERE membership_number = $1
-                        UNION ALL
-                        SELECT 1 FROM legacy_lifetime_members WHERE membership_number = $1
-                        LIMIT 1
-                    `,
-                    [membershipNumber]
-                );
-
-                if (collisionResult.rowCount === 0) {
-                    break;
-                }
-
-                candidate += 1;
-                membershipNumber = 'LT ' + candidate;
-            }
+            // ?category=LT|OM|AM (or lifetime|ordinary|associate); Lifetime by default.
+            const raw = cleanText(req.query.category);
+            const category = M.CATEGORIES[raw.toUpperCase()]
+                ? raw.toUpperCase()
+                : (M.TYPE_TO_CATEGORY[raw.toLowerCase()] || 'LT');
 
             return res.json({
                 success: true,
-                membershipNumber: membershipNumber
+                category,
+                membershipNumber: await M.suggestMembershipNumber(category)
             });
         } catch (error) {
             return next(error);
@@ -1088,6 +1147,8 @@ router.patch(
     requireAuth,
 
     async function (req, res, next) {
+        const client = await pool.connect();
+
         try {
             const referenceNumber = normaliseReferenceNumber(
                 req.params.referenceNumber
@@ -1102,10 +1163,6 @@ router.patch(
             ];
 
             const status = cleanText(req.body.status).toLowerCase();
-            const membershipNumber = cleanText(
-                req.body.membershipNumber
-            );
-
             const statusNote = cleanText(req.body.statusNote);
             const adminNote = cleanText(req.body.adminNote);
 
@@ -1121,87 +1178,85 @@ router.patch(
                 );
             }
 
-            if (status === 'approved' && !membershipNumber) {
+            if (status === 'approved' && !cleanText(req.body.membershipNumber)) {
                 throw validationError(
                     'A membership number is required when approving an application.'
                 );
             }
 
-            // Membership numbers must also be unique against the pre-digital
-            // lifetime membership roll (legacy_lifetime_members) -- that table
-            // has its own UNIQUE constraint, but it's a separate table, so a
-            // collision there wouldn't be caught by this one's UNIQUE
-            // constraint on membership_number.
-            if (status === 'approved' && membershipNumber) {
-                const legacyMatch = await pool.query(
-                    'SELECT full_name FROM legacy_lifetime_members WHERE membership_number = $1',
-                    [membershipNumber]
-                );
+            await client.query('BEGIN');
 
-                if (legacyMatch.rowCount > 0) {
-                    throw validationError(
-                        `This membership number is already assigned to an existing member: ${legacyMatch.rows[0].full_name}. Please use a different number.`
-                    );
-                }
-            }
-
-            const existingResult = await pool.query(
-                `
-                    SELECT
-                        id,
-                        application_status,
-                        membership_number
-                    FROM membership_applications
-                    WHERE reference_number = $1
-                `,
+            const existingResult = await client.query(
+                'SELECT * FROM membership_applications WHERE reference_number = $1 FOR UPDATE',
                 [referenceNumber]
             );
 
             if (existingResult.rowCount === 0) {
+                await client.query('ROLLBACK');
                 return res.status(404).json({
                     success: false,
                     message: 'Membership application not found.'
                 });
             }
 
-            const existingApplication = existingResult.rows[0];
+            const existing = existingResult.rows[0];
 
-            /*
-             * A membership number cannot be silently replaced after approval.
-             * If a correction is necessary, handle it intentionally in a future
-             * dedicated admin action.
-             */
-            if (
-                existingApplication.membership_number &&
-                membershipNumber &&
-                existingApplication.membership_number !==
-                membershipNumber
-            ) {
+            // Once approved, the person is a member: their record is managed
+            // from the Member Directory (renewals, upgrades, deactivation),
+            // so the application itself can no longer change status.
+            if (existing.application_status === 'approved') {
                 throw validationError(
-                    'This application already has a different membership number assigned.'
+                    'This application is already approved. Manage the member from the Member Directory.'
                 );
             }
 
-            /*
-             * Use the supplied number during approval. For other statuses,
-             * preserve the existing number instead of clearing it.
-             */
-            const finalMembershipNumber =
-                status === 'approved'
-                    ? membershipNumber
-                    : existingApplication.membership_number;
+            const category = M.TYPE_TO_CATEGORY[existing.membership_type] || 'LT';
+            let membershipNumber = existing.membership_number;
+            let joinedOn = existing.joined_on ? M.toDateString(existing.joined_on) : null;
+            let validUntil = null;
 
-            /*
-             * req.user is expected to be set by requireAuth.
-             * Adjust req.user.id if your auth middleware uses another property,
-             * such as req.user.userId.
-             */
-            const reviewedBy =
-                req.user && req.user.id
-                    ? req.user.id
-                    : null;
+            if (status === 'approved') {
+                try {
+                    membershipNumber = await M.checkMembershipNumber(req.body.membershipNumber, category, null, client);
+                } catch (numberError) {
+                    numberError.field = 'membershipNumber';
+                    throw numberError;
+                }
 
-            const result = await pool.query(
+                // The same person can't become a member twice.
+                const sameNic = existing.nic_number
+                    ? await client.query(
+                        `SELECT membership_number FROM members
+                          WHERE UPPER(REPLACE(nic_number, ' ', '')) = ANY($1) LIMIT 1`,
+                        [nicVariants(existing.nic_number)]
+                    )
+                    : { rowCount: 0 };
+
+                if (sameNic.rowCount > 0) {
+                    throw validationError(
+                        `A member with this NIC already exists (${sameNic.rows[0].membership_number}). ` +
+                        'Renew or upgrade that membership instead.'
+                    );
+                }
+
+                // Annual memberships run 12 months from the start date
+                // (default: the day the application was submitted).
+                // Lifetime members are members from the approval date.
+                if (M.isAnnual(category)) {
+                    const typed = cleanText(req.body.joinedOn);
+                    if (typed && !/^\d{4}-\d{2}-\d{2}$/.test(typed)) {
+                        throw validationError('Please enter a valid membership start date.');
+                    }
+                    joinedOn = typed || M.toDateString(existing.created_at);
+                    validUntil = M.addYear(joinedOn);
+                } else {
+                    joinedOn = M.today();
+                }
+            }
+
+            const reviewedBy = req.user && req.user.id ? req.user.id : null;
+
+            const result = await client.query(
                 `
                     UPDATE membership_applications
                     SET
@@ -1209,97 +1264,55 @@ router.patch(
                         membership_number = $2::varchar,
                         status_note = $3::text,
                         admin_note = $4::text,
-
                         reviewed_by = $5::bigint,
                         reviewed_at = NOW(),
-
-                        approved_at = CASE
-                        WHEN $1::varchar = 'approved' THEN NOW()
-                        ELSE approved_at
-                    END,
-
-                    rejected_at = CASE
-                    WHEN $1::varchar = 'rejected' THEN NOW()
-                    ELSE rejected_at
-                    END,
-
-                    updated_at = NOW()
+                        approved_at = CASE WHEN $1::varchar = 'approved' THEN NOW() ELSE approved_at END,
+                        rejected_at = CASE WHEN $1::varchar = 'rejected' THEN NOW() ELSE rejected_at END,
+                        joined_on = CASE WHEN $1::varchar = 'approved' THEN $7::date ELSE joined_on END,
+                        updated_at = NOW()
                     WHERE reference_number = $6::varchar
-                    RETURNING
-                        id,
-
-                        reference_number,
-                        membership_type,
-                        application_status,
-                        membership_number,
-
-                        full_name,
-                        name_with_initials,
-                        title,
-
-                        nic_number,
-                        date_of_birth,
-                        sex,
-                        marital_status,
-
-                        permanent_address,
-                        current_working_place,
-                        official_address,
-
-                        mobile_number,
-                        whatsapp_number,
-                        residential_number,
-                        office_number,
-                        email_address,
-
-                        slnc_registration_number,
-                        slnc_registration_date,
-                        designation,
-
-                        first_appointment_date,
-                        first_appointment_place,
-
-                        nursing_school,
-                        batch,
-                        higher_educational_qualification,
-
-                        payment_reference,
-                        transfer_date,
-
-                        status_note,
-                        admin_note,
-
-                        created_at,
-                        updated_at,
-                        reviewed_at,
-                        approved_at,
-                        rejected_at
+                    RETURNING *
                 `,
                 [
                     status,
-                    finalMembershipNumber || null,
+                    membershipNumber || null,
                     statusNote || null,
                     adminNote || null,
                     reviewedBy,
-                    referenceNumber
+                    referenceNumber,
+                    joinedOn
                 ]
             );
 
-            const updatedApplication = result.rows[0];
+            const updated = result.rows[0];
+
+            if (status === 'approved') {
+                await createMemberFromApplication(client, updated, {
+                    category,
+                    joinedOn,
+                    validUntil,
+                    source: updated.is_manual_entry ? 'manual' : 'application'
+                });
+            }
+
+            await client.query('COMMIT');
 
             const decisionEmailApplication = {
-                fullName: updatedApplication.full_name,
-                emailAddress: updatedApplication.email_address,
-                referenceNumber: updatedApplication.reference_number,
-                membershipNumber: updatedApplication.membership_number,
-                statusNote: updatedApplication.status_note,
-                applicationStatus: updatedApplication.application_status,
-                nameWithInitials: updatedApplication.name_with_initials,
-                title: updatedApplication.title,
-                nicNumber: updatedApplication.nic_number,
-                mobileNumber: updatedApplication.mobile_number,
-                currentWorkingPlace: updatedApplication.current_working_place,
-                designation: updatedApplication.designation,
+                fullName: updated.full_name,
+                emailAddress: updated.email_address,
+                referenceNumber: updated.reference_number,
+                membershipNumber: updated.membership_number,
+                membershipType: updated.membership_type,
+                validUntil,
+                statusNote: updated.status_note,
+                applicationStatus: updated.application_status,
+                nameWithInitials: updated.name_with_initials,
+                title: updated.title,
+                nicNumber: updated.nic_number,
+                mobileNumber: updated.mobile_number,
+                currentWorkingPlace: updated.current_working_place,
+                designation: updated.designation,
+                studentNumber: updated.student_number,
                 approvedBy: req.user && req.user.username ? req.user.username : null
             };
 
@@ -1312,16 +1325,16 @@ router.patch(
 
             return res.json({
                 success: true,
-                message:
-                    'Membership application status updated successfully.',
-                application: applicationToAdminJson(result.rows[0])
+                message: 'Membership application status updated successfully.',
+                application: applicationToAdminJson(updated)
             });
         } catch (error) {
+            await client.query('ROLLBACK').catch(function () {});
+
             if (
                 error &&
                 error.code === '23505' &&
-                error.constraint ===
-                'membership_applications_membership_number_key'
+                /membership_number/.test(error.constraint || '')
             ) {
                 return res.status(409).json({
                     success: false,
@@ -1331,10 +1344,60 @@ router.patch(
                 });
             }
 
+            if (error && error.field === 'membershipNumber') {
+                return res.status(409).json({
+                    success: false,
+                    message: error.message,
+                    field: 'membershipNumber'
+                });
+            }
+
             return next(error);
+        } finally {
+            client.release();
         }
     }
 );
+
+// Columns copied from an application into its members row.
+const MEMBER_COPY_COLUMNS = [
+    'membership_number', 'full_name', 'name_with_initials', 'title', 'nic_number',
+    'date_of_birth', 'sex', 'marital_status', 'permanent_address',
+    'current_working_place', 'official_address', 'mobile_number',
+    'whatsapp_number', 'residential_number', 'office_number', 'email_address',
+    'slnc_registration_number', 'slnc_registration_date', 'designation',
+    'first_appointment_date', 'first_appointment_place', 'nursing_school',
+    'batch', 'higher_educational_qualification', 'student_number',
+    'institute_registration_date', 'is_active', 'admin_note'
+];
+
+// Creates the members row for a just-approved (or manually added)
+// application, inside the caller's transaction.
+async function createMemberFromApplication(client, application, options) {
+    const columns = MEMBER_COPY_COLUMNS.concat([
+        'category', 'joined_on', 'category_since', 'valid_until', 'source', 'application_id'
+    ]);
+
+    const values = MEMBER_COPY_COLUMNS.map(function (col) { return application[col]; }).concat([
+        options.category,
+        options.joinedOn,
+        options.joinedOn,
+        options.validUntil,
+        options.source,
+        application.id
+    ]);
+
+    const placeholders = columns.map(function (_, i) { return '$' + (i + 1); }).join(', ');
+
+    const inserted = await client.query(
+        `INSERT INTO members (${columns.join(', ')}) VALUES (${placeholders})
+         ON CONFLICT (application_id) DO NOTHING
+         RETURNING *`,
+        values
+    );
+
+    return inserted.rows[0];
+}
 
 /*
  * Admin: update a member's personal/contact/professional details.
@@ -1433,6 +1496,14 @@ router.patch(
                 });
             }
 
+            // Keep the member's own record (members table) in step.
+            values[values.length - 1] = result.rows[0].id;
+            await pool.query(
+                `UPDATE members SET ${updates.join(', ')}, updated_at = NOW()
+                  WHERE application_id = $${values.length}`,
+                values
+            );
+
             return res.json({
                 success: true,
                 application: applicationToAdminJson(result.rows[0])
@@ -1493,23 +1564,16 @@ router.post(
                 throw validationError('Please enter a valid email address.');
             }
 
-            // Same cross-table collision check used when approving a digital
-            // application -- legacy_lifetime_members has its own UNIQUE
-            // constraint on membership_number, in a separate table the
-            // membership_applications UNIQUE constraint can't see.
-            const legacyMatch = await pool.query(
-                'SELECT full_name FROM legacy_lifetime_members WHERE membership_number = $1',
-                [membershipNumber]
-            );
-
-            if (legacyMatch.rowCount > 0) {
+            // Unique across every member, including old numbers reserved
+            // after an upgrade.
+            if (await M.numberTaken(membershipNumber)) {
                 throw validationError(
-                    `This membership number is already assigned to an existing member: ${legacyMatch.rows[0].full_name}. Please use a different number.`
+                    'This membership number is already assigned to another member. Please use a different number.'
                 );
             }
 
             const fullName = cleanText(req.body.fullName) || nameWithInitials;
-            const referenceNumber = await createUniqueReferenceNumber();
+            const referenceNumber = await createUniqueReferenceNumber('LT');
             const addedBy = req.user && req.user.id ? req.user.id : null;
 
             const result = await pool.query(
@@ -1604,6 +1668,13 @@ router.post(
                 ]
             );
 
+            await createMemberFromApplication(pool, result.rows[0], {
+                category: 'LT',
+                joinedOn: M.today(),
+                validUntil: null,
+                source: 'manual'
+            });
+
             return res.status(201).json({
                 success: true,
                 message: 'Member added to the directory.',
@@ -1690,6 +1761,13 @@ router.patch(
                     RETURNING *
                 `,
                 [deactivatedBy, referenceNumber]
+            );
+
+            await pool.query(
+                `UPDATE members SET is_active = FALSE, deactivated_at = NOW(),
+                        deactivated_by = $1, updated_at = NOW()
+                  WHERE application_id = $2`,
+                [deactivatedBy, result.rows[0].id]
             );
 
             return res.json({
@@ -1844,13 +1922,28 @@ router.get(
 
             const application = result.rows[0];
 
+            // Once approved: the member's current number, category and
+            // validity (they may have renewed or upgraded since).
+            const member = application.application_status === 'approved'
+                ? (await pool.query(
+                    `SELECT m.membership_number, m.category, m.valid_until
+                       FROM members m
+                       JOIN membership_applications a ON a.id = m.application_id
+                      WHERE a.reference_number = $1`,
+                    [application.reference_number]
+                )).rows[0]
+                : null;
+
             return res.json({
                 success: true,
                 application: {
                     referenceNumber: application.reference_number,
                     membershipType: application.membership_type,
+                    category: member ? member.category : (M.TYPE_TO_CATEGORY[application.membership_type] || 'LT'),
+                    categoryLabel: M.CATEGORIES[member ? member.category : (M.TYPE_TO_CATEGORY[application.membership_type] || 'LT')],
+                    validUntil: member ? M.toDateString(member.valid_until) : null,
                     status: application.application_status,
-                    membershipNumber: application.membership_number,
+                    membershipNumber: member ? member.membership_number : application.membership_number,
                     statusNote: application.status_note,
                     followUp: applicantFollowUp({
                         applicationStatus: application.application_status,
@@ -1882,20 +1975,19 @@ router.post(
 
     async function (req, res, next) {
         try {
-            const nic = cleanText(req.body.nic).replace(/s/g, '').toUpperCase();
+            const nic = normaliseNic(req.body.nic);
 
             if (!nic) {
                 throw validationError('NIC is required.');
             }
 
+            // Any member (application, manual or legacy), active ones first.
             const result = await pool.query(
                 `
-                    SELECT full_name, membership_number
-                    FROM membership_applications
+                    SELECT full_name, membership_number, category, valid_until
+                    FROM members
                     WHERE UPPER(REPLACE(nic_number, ' ', '')) = ANY($1)
-                      AND application_status = 'approved'
-                      AND membership_number IS NOT NULL
-                    ORDER BY approved_at DESC NULLS LAST
+                    ORDER BY is_active DESC, updated_at DESC
                     LIMIT 1
                 `,
                 [nicVariants(nic)]
@@ -1915,7 +2007,10 @@ router.post(
             return res.json({
                 success: true,
                 fullName: match.full_name,
-                membershipNumber: match.membership_number
+                membershipNumber: match.membership_number,
+                category: match.category,
+                categoryLabel: M.CATEGORIES[match.category],
+                validUntil: M.toDateString(match.valid_until)
             });
         } catch (error) {
             return next(error);

@@ -24,6 +24,8 @@ const executiveCommitteeRoutes = require('./routes/executive-committee');
 const subCommitteesRoutes = require('./routes/sub-committees');
 const legacyMembersRoutes = require('./routes/legacy-members');
 const memberDirectoryRoutes = require('./routes/member-directory');
+const membershipRenewalsRoutes = require('./routes/membership-renewals').router;
+const membershipMembersRoutes = require('./routes/membership-members');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -78,6 +80,10 @@ app.use(
     '/api/membership',
     membershipApplicationsRoutes
 );
+// Public renewal / upgrade page (Renew Membership).
+app.use('/api/membership', membershipRenewalsRoutes);
+// Admin: members, renewals, membership settings, reminders.
+app.use('/api/membership-admin', membershipMembersRoutes);
 app.use('/api/events', eventsRoutes);
 app.use('/api/event-registrations', eventRegistrationsRoutes);
 app.use('/api/contact-queries', contactQueriesRoutes);

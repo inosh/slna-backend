@@ -8,6 +8,7 @@
 const express = require('express');
 const pool = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
+const { numberTaken } = require('../lib/membership');
 
 const router = express.Router();
 
@@ -146,11 +147,28 @@ router.post('/', requireAuth, async function (req, res, next) {
 
         const placeholders = values.map((_, i) => '$' + (i + 1)).join(', ');
 
+        if (await numberTaken(membershipNumber)) {
+            const error = new Error('That membership number is already in use by another member.');
+            error.statusCode = 400;
+            throw error;
+        }
+
         const result = await pool.query(
             `INSERT INTO legacy_lifetime_members (${columns.join(', ')})
              VALUES (${placeholders})
              RETURNING *`,
             values
+        );
+
+        // Every member also lives in the members table (the Member Directory
+        // and renewals read from there).
+        const memberColumns = columns.concat(['category', 'source', 'legacy_member_id']);
+        const memberValues = values.concat(['LT', 'legacy', result.rows[0].id]);
+        await pool.query(
+            `INSERT INTO members (${memberColumns.join(', ')})
+             VALUES (${memberValues.map((_, i) => '$' + (i + 1)).join(', ')})
+             ON CONFLICT (legacy_member_id) DO NOTHING`,
+            memberValues
         );
 
         return res.status(201).json({
@@ -227,6 +245,13 @@ router.patch('/:id', requireAuth, async function (req, res, next) {
             throw error;
         }
 
+        // Keep the member's record in the members table in step.
+        await pool.query(
+            `UPDATE members SET ${updates.join(', ')}, updated_at = now()
+             WHERE legacy_member_id = $${values.length}`,
+            values
+        );
+
         return res.json({
             success: true,
             member: toMemberJson(result.rows[0])
@@ -280,6 +305,12 @@ router.patch('/:id/deactivate', requireAuth, async function (req, res, next) {
              SET is_active = FALSE, deactivated_at = now(), deactivated_by = $1, updated_at = now()
              WHERE id = $2
              RETURNING *`,
+            [deactivatedBy, id]
+        );
+
+        await pool.query(
+            `UPDATE members SET is_active = FALSE, deactivated_at = now(), deactivated_by = $1, updated_at = now()
+             WHERE legacy_member_id = $2`,
             [deactivatedBy, id]
         );
 
