@@ -7,9 +7,9 @@ const { requireAuth } = require('../middleware/auth');
 // "upgrade" is the old Associate -> Lifetime fee: kept so the current site
 // keeps working during the rollout, but upgrades now cost the full fee of
 // the new category (less any loyalty discount, see Membership Settings).
-const FEE_KEYS = new Set(['associate', 'lifetime', 'general', 'upgrade']);
-const KEY_CATEGORY = { lifetime: 'LT', general: 'GM', associate: 'AM' };
-const KEY_ORDER = { lifetime: 1, general: 2, associate: 3, upgrade: 4 };
+const FEE_KEYS = new Set(['associate', 'lifetime', 'ordinary', 'upgrade']);
+const KEY_CATEGORY = { lifetime: 'LT', ordinary: 'OM', associate: 'AM' };
+const KEY_ORDER = { lifetime: 1, ordinary: 2, associate: 3, upgrade: 4 };
 
 function normaliseFee(row) {
   return {

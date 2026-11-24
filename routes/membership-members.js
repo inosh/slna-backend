@@ -3,7 +3,7 @@
 // (mounted at /api/membership-admin; every route needs a login).
 //
 //   GET    /overview                      counts for badges and stat tiles
-//   GET    /next-number?category=GM       suggested next membership number
+//   GET    /next-number?category=OM       suggested next membership number
 //   GET    /members?state=&category=&record=&q=
 //   GET    /members/counts?category=&record=&q=
 //   GET    /members/:id                   details, payments, reminders, old numbers
@@ -331,7 +331,7 @@ router.post('/members', async (req, res, next) => {
     if (M.isAnnual(category)) {
       validUntil = clean(req.body.validUntil) || (joinedOn ? M.addYear(joinedOn) : null);
       if (!validUntil || !isDate(validUntil)) {
-        throw M.badRequest('Please enter "Valid until" (or "Member since") for a General or Associate member.');
+        throw M.badRequest('Please enter "Valid until" (or "Member since") for an Ordinary or Associate member.');
       }
     }
 
@@ -622,7 +622,7 @@ async function applyRenewal(client, member, request, { by, membershipNumber }) {
 
 // Records a payment made offline (cash / bank transfer told to the office)
 // for `member` inside the caller's transaction; verified straight away.
-// An Associate upgrading to General / Lifetime also gives their work
+// An Associate upgrading to Ordinary / Lifetime also gives their work
 // details, saved to the member record. Returns { request, member }.
 async function recordPayment(client, member, body, by) {
   const kind = clean(body.kind);

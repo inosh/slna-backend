@@ -177,7 +177,7 @@ router.post(
       )).rows[0];
       if (pending) throw M.badRequest('Your previous renewal is still being verified. You will hear from us soon.');
 
-      // An Associate (student) upgrading to General / Lifetime gives their
+      // An Associate (student) upgrading to Ordinary / Lifetime gives their
       // work details now. They are saved to the member record straight away
       // (kept even if the payment is later rejected: they're still useful).
       const workDetails = target && M.needsWorkDetails(member, kind, target.to_category)

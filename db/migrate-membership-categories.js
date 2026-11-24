@@ -1,10 +1,12 @@
 // db/migrate-membership-categories.js
-// General (GM) and Associate (AM) memberships, renewals and upgrades.
+// Ordinary (OM) and Associate (AM) memberships, renewals and upgrades.
+// (Ordinary was first built as "General" / GM: re-running this converts
+// any GM / "general" rows from those earlier runs.)
 //
 // Adds (never removes or rewrites existing data):
-//   - membership_applications: membership_type CHECK (lifetime | general |
+//   - membership_applications: membership_type CHECK (lifetime | ordinary |
 //     associate) and the student / payment / start-date columns
-//   - membership_fee_settings: a "general" fee and an is_annual flag
+//   - membership_fee_settings: an "ordinary" fee and an is_annual flag
 //   - members: one row per member, the source of truth for the Member
 //     Directory, renewals and upgrades
 //   - renewal_requests, renewal_tokens, reminder_log,
@@ -31,9 +33,14 @@ const SCHEMA_SQL = `
   -- membership_applications --------------------------------------------
   ALTER TABLE public.membership_applications
     DROP CONSTRAINT IF EXISTS membership_applications_membership_type_check;
+  UPDATE public.membership_applications SET membership_type = 'ordinary' WHERE membership_type = 'general';
+  UPDATE public.membership_applications SET membership_number = 'OM' || substr(membership_number, 3)
+   WHERE membership_number ~* '^GM[ ]?[0-9]';
+  UPDATE public.membership_applications SET reference_number = 'SLNA-OM-' || substr(reference_number, 9)
+   WHERE reference_number LIKE 'SLNA-GM-%';
   ALTER TABLE public.membership_applications
     ADD CONSTRAINT membership_applications_membership_type_check
-    CHECK (membership_type::text = ANY (ARRAY['lifetime', 'general', 'associate']::text[]));
+    CHECK (membership_type::text = ANY (ARRAY['lifetime', 'ordinary', 'associate']::text[]));
 
   ALTER TABLE public.membership_applications
     ADD COLUMN IF NOT EXISTS student_number character varying(100),
@@ -44,20 +51,25 @@ const SCHEMA_SQL = `
   -- membership_fee_settings --------------------------------------------
   ALTER TABLE public.membership_fee_settings
     DROP CONSTRAINT IF EXISTS membership_fee_settings_key_check;
+  UPDATE public.membership_fee_settings
+     SET key = 'ordinary',
+         label = CASE WHEN label = 'General Member Fee (LKR)' THEN 'Ordinary Member Fee (LKR)' ELSE label END
+   WHERE key = 'general'
+     AND NOT EXISTS (SELECT 1 FROM public.membership_fee_settings WHERE key = 'ordinary');
   ALTER TABLE public.membership_fee_settings
     ADD CONSTRAINT membership_fee_settings_key_check
-    CHECK (key = ANY (ARRAY['associate', 'lifetime', 'general', 'upgrade']::text[]));
+    CHECK (key = ANY (ARRAY['associate', 'lifetime', 'ordinary', 'upgrade']::text[]));
 
   ALTER TABLE public.membership_fee_settings
     ADD COLUMN IF NOT EXISTS is_annual boolean NOT NULL DEFAULT false;
 
   INSERT INTO public.membership_fee_settings (key, label, amount, is_tba, is_annual)
-  VALUES ('general', 'General Member Fee (LKR)', 1200, false, true)
+  VALUES ('ordinary', 'Ordinary Member Fee (LKR)', 1200, false, true)
   ON CONFLICT (key) DO NOTHING;
 
   UPDATE public.membership_fee_settings
-     SET is_annual = (key IN ('associate', 'general'))
-   WHERE is_annual IS DISTINCT FROM (key IN ('associate', 'general'));
+     SET is_annual = (key IN ('associate', 'ordinary'))
+   WHERE is_annual IS DISTINCT FROM (key IN ('associate', 'ordinary'));
 
   -- members --------------------------------------------------------------
   CREATE TABLE IF NOT EXISTS public.members
@@ -111,7 +123,7 @@ const SCHEMA_SQL = `
           REFERENCES public.membership_applications (id) ON DELETE SET NULL,
       CONSTRAINT members_legacy_member_id_fkey FOREIGN KEY (legacy_member_id)
           REFERENCES public.legacy_lifetime_members (id) ON DELETE SET NULL,
-      CONSTRAINT members_category_check CHECK (category::text = ANY (ARRAY['LT', 'GM', 'AM']::text[])),
+      CONSTRAINT members_category_check CHECK (category::text = ANY (ARRAY['LT', 'OM', 'AM']::text[])),
       CONSTRAINT members_source_check CHECK (source::text = ANY (ARRAY['application', 'manual', 'legacy']::text[])),
       CONSTRAINT members_sex_check CHECK (sex IS NULL OR sex::text = ANY (ARRAY['Male', 'Female']::text[])),
       -- Lifetime members, and only they, have no expiry date.
@@ -224,6 +236,30 @@ const SCHEMA_SQL = `
     ('notice_days', '30'::jsonb),
     ('upgrade_discounts', '{}'::jsonb)
   ON CONFLICT (key) DO NOTHING;
+
+  -- General (GM) was renamed Ordinary (OM) -------------------------------
+  -- Converts rows from earlier runs of this migration; a no-op otherwise.
+  ALTER TABLE public.members DROP CONSTRAINT IF EXISTS members_category_check;
+  UPDATE public.members SET category = 'OM' WHERE category = 'GM';
+  UPDATE public.members SET membership_number = 'OM' || substr(membership_number, 3)
+   WHERE membership_number ~* '^GM[ ]?[0-9]';
+  ALTER TABLE public.members
+    ADD CONSTRAINT members_category_check CHECK (category::text = ANY (ARRAY['LT', 'OM', 'AM']::text[]));
+
+  UPDATE public.renewal_requests SET from_category = 'OM' WHERE from_category = 'GM';
+  UPDATE public.renewal_requests SET to_category = 'OM' WHERE to_category = 'GM';
+  UPDATE public.renewal_requests SET previous_membership_number = 'OM' || substr(previous_membership_number, 3)
+   WHERE previous_membership_number ~* '^GM[ ]?[0-9]';
+  UPDATE public.renewal_requests SET new_membership_number = 'OM' || substr(new_membership_number, 3)
+   WHERE new_membership_number ~* '^GM[ ]?[0-9]';
+  UPDATE public.retired_membership_numbers SET membership_number = 'OM' || substr(membership_number, 3)
+   WHERE membership_number ~* '^GM[ ]?[0-9]';
+
+  UPDATE public.membership_settings
+     SET value = (SELECT COALESCE(jsonb_object_agg(replace(replace(k, 'GM-', 'OM-'), '-GM', '-OM'), v), '{}'::jsonb)
+                    FROM jsonb_each(value) AS e(k, v)),
+         updated_at = now()
+   WHERE key = 'upgrade_discounts' AND value::text ~ '"(GM-|[A-Z]{2}-GM)';
 `;
 
 // Columns copied as-is from both source tables into members.
@@ -242,16 +278,16 @@ const COLS = SHARED_COLUMNS.join(', ');
 const SRC_COLS = SHARED_COLUMNS.map((c) => 's.' + c).join(', ');
 
 // Approved applications -> members. Every existing application is Lifetime;
-// the CASE keeps this correct if it's re-run after GM/AM approvals exist
+// the CASE keeps this correct if it's re-run after OM/AM approvals exist
 // (though the new backend creates those members itself on approval).
 const BACKFILL_APPLICATIONS = `
   INSERT INTO public.members (${COLS}, category, joined_on, category_since,
                               valid_until, source, application_id, admin_note)
   SELECT ${SRC_COLS},
-         CASE s.membership_type WHEN 'general' THEN 'GM' WHEN 'associate' THEN 'AM' ELSE 'LT' END,
+         CASE s.membership_type WHEN 'ordinary' THEN 'OM' WHEN 'associate' THEN 'AM' ELSE 'LT' END,
          COALESCE(s.joined_on, (COALESCE(s.approved_at, s.created_at) AT TIME ZONE 'Asia/Colombo')::date),
          COALESCE(s.joined_on, (COALESCE(s.approved_at, s.created_at) AT TIME ZONE 'Asia/Colombo')::date),
-         CASE WHEN s.membership_type IN ('general', 'associate')
+         CASE WHEN s.membership_type IN ('ordinary', 'associate')
               THEN (COALESCE(s.joined_on, (COALESCE(s.approved_at, s.created_at) AT TIME ZONE 'Asia/Colombo')::date) + interval '1 year')::date
               ELSE NULL END,
          CASE WHEN s.is_manual_entry THEN 'manual' ELSE 'application' END,

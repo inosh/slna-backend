@@ -21,7 +21,7 @@ const M = require('../lib/membership');
 const router = express.Router();
 
 // Membership types accepted on applications (membership_applications.membership_type).
-const MEMBERSHIP_TYPES = ['lifetime', 'general', 'associate'];
+const MEMBERSHIP_TYPES = ['lifetime', 'ordinary', 'associate'];
 
 function membershipTypeOf(value) {
     const type = cleanText(value).toLowerCase();
@@ -418,7 +418,7 @@ function deleteUploadedFiles(files) {
         });
 }
 
-// SLNA-LT-20261124-AB12CD34 / SLNA-GM-... / SLNA-AM-...
+// SLNA-LT-20261124-AB12CD34 / SLNA-OM-... / SLNA-AM-...
 function createReferenceNumber(category) {
     const date = new Date();
 
@@ -1090,11 +1090,11 @@ router.get(
  * something this endpoint should enforce.
  *
  * Each category has its own series: "LT n" (continuing the existing
- * Lifetime numbers), "GM n" and "AM n". Old pre-digital numbers in other
+ * Lifetime numbers), "OM n" and "AM n". Old pre-digital numbers in other
  * formats (e.g. "W 266") don't count, and numbers reserved after an upgrade
  * are never suggested again (see lib/membership.js suggestMembershipNumber).
  *
- * GET /api/membership/admin/next-membership-number?category=GM
+ * GET /api/membership/admin/next-membership-number?category=OM
  */
 router.get(
     '/admin/next-membership-number',
@@ -1103,7 +1103,7 @@ router.get(
 
     async function (req, res, next) {
         try {
-            // ?category=LT|GM|AM (or lifetime|general|associate); Lifetime by default.
+            // ?category=LT|OM|AM (or lifetime|ordinary|associate); Lifetime by default.
             const raw = cleanText(req.query.category);
             const category = M.CATEGORIES[raw.toUpperCase()]
                 ? raw.toUpperCase()

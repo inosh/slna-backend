@@ -1,5 +1,5 @@
 // db/run-reminders.js
-// Sends due membership renewal reminders (General and Associate members).
+// Sends due membership renewal reminders (Ordinary and Associate members).
 // Schedule it to run once a day as a Railway cron service, like the nightly
 // backup (start command: npm run reminders). Admins can also send them from
 // the dashboard (Membership Settings -> Send due reminders now).

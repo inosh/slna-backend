@@ -621,7 +621,7 @@ ALTER TABLE IF EXISTS public.legacy_lifetime_members
     OWNER to postgres;
 
 -- ======================================================================
--- General (GM) and Associate (AM) memberships, renewals and upgrades.
+-- Ordinary (OM) and Associate (AM) memberships, renewals and upgrades.
 -- Applied to existing databases by db/migrate-membership-categories.js
 -- (which also backfills members from approved applications and the
 -- legacy lifetime roll). Kept here so a fresh database matches.
@@ -631,7 +631,7 @@ ALTER TABLE IF EXISTS public.legacy_lifetime_members
     DROP CONSTRAINT IF EXISTS membership_applications_membership_type_check;
   ALTER TABLE public.membership_applications
     ADD CONSTRAINT membership_applications_membership_type_check
-    CHECK (membership_type::text = ANY (ARRAY['lifetime', 'general', 'associate']::text[]));
+    CHECK (membership_type::text = ANY (ARRAY['lifetime', 'ordinary', 'associate']::text[]));
 
   ALTER TABLE public.membership_applications
     ADD COLUMN IF NOT EXISTS student_number character varying(100),
@@ -644,18 +644,18 @@ ALTER TABLE IF EXISTS public.legacy_lifetime_members
     DROP CONSTRAINT IF EXISTS membership_fee_settings_key_check;
   ALTER TABLE public.membership_fee_settings
     ADD CONSTRAINT membership_fee_settings_key_check
-    CHECK (key = ANY (ARRAY['associate', 'lifetime', 'general', 'upgrade']::text[]));
+    CHECK (key = ANY (ARRAY['associate', 'lifetime', 'ordinary', 'upgrade']::text[]));
 
   ALTER TABLE public.membership_fee_settings
     ADD COLUMN IF NOT EXISTS is_annual boolean NOT NULL DEFAULT false;
 
   INSERT INTO public.membership_fee_settings (key, label, amount, is_tba, is_annual)
-  VALUES ('general', 'General Member Fee (LKR)', 1200, false, true)
+  VALUES ('ordinary', 'Ordinary Member Fee (LKR)', 1200, false, true)
   ON CONFLICT (key) DO NOTHING;
 
   UPDATE public.membership_fee_settings
-     SET is_annual = (key IN ('associate', 'general'))
-   WHERE is_annual IS DISTINCT FROM (key IN ('associate', 'general'));
+     SET is_annual = (key IN ('associate', 'ordinary'))
+   WHERE is_annual IS DISTINCT FROM (key IN ('associate', 'ordinary'));
 
   -- members --------------------------------------------------------------
   CREATE TABLE IF NOT EXISTS public.members
@@ -709,7 +709,7 @@ ALTER TABLE IF EXISTS public.legacy_lifetime_members
           REFERENCES public.membership_applications (id) ON DELETE SET NULL,
       CONSTRAINT members_legacy_member_id_fkey FOREIGN KEY (legacy_member_id)
           REFERENCES public.legacy_lifetime_members (id) ON DELETE SET NULL,
-      CONSTRAINT members_category_check CHECK (category::text = ANY (ARRAY['LT', 'GM', 'AM']::text[])),
+      CONSTRAINT members_category_check CHECK (category::text = ANY (ARRAY['LT', 'OM', 'AM']::text[])),
       CONSTRAINT members_source_check CHECK (source::text = ANY (ARRAY['application', 'manual', 'legacy']::text[])),
       CONSTRAINT members_sex_check CHECK (sex IS NULL OR sex::text = ANY (ARRAY['Male', 'Female']::text[])),
       -- Lifetime members, and only they, have no expiry date.
