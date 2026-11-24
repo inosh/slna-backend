@@ -33,6 +33,11 @@ function membershipLabel(type) {
     return M.CATEGORIES[M.TYPE_TO_CATEGORY[type] || 'LT'];
 }
 
+// "An Ordinary Membership", "An Associate Membership", "A Lifetime Membership"
+function withArticle(label) {
+    return (/^[AEIOU]/i.test(label) ? 'An ' : 'A ') + label;
+}
+
 // Associate membership is for students: no job / SLNC details, but a
 // student number and the date they registered at the nursing school.
 const isStudentType = (type) => type === 'associate';
@@ -550,7 +555,7 @@ function sendSecretaryApplicationApprovedEmail(application) {
         to: SECRETARY_EMAIL,
         subject: `Membership Application Approved - ${application.membershipNumber} (${application.referenceNumber})`,
         text:
-            `A ${membershipLabel(application.membershipType)} application was approved` +
+            `${withArticle(membershipLabel(application.membershipType))} application was approved` +
             (application.approvedBy ? ` by ${application.approvedBy}` : '') +
             '.\n\n' +
             `Membership number assigned: ${application.membershipNumber}\n` +
@@ -562,8 +567,11 @@ function sendSecretaryApplicationApprovedEmail(application) {
             `NIC: ${application.nicNumber || '-'}\n` +
             `Email: ${application.emailAddress}\n` +
             `Mobile number: ${application.mobileNumber || '-'}\n` +
-            `Working place: ${application.currentWorkingPlace || '-'}\n` +
-            `Designation: ${application.designation || '-'}\n` +
+            (isStudentType(application.membershipType)
+                ? `Nursing school / university: ${application.currentWorkingPlace || '-'}\n` +
+                  `Student number: ${application.studentNumber || '-'}\n`
+                : `Working place: ${application.currentWorkingPlace || '-'}\n` +
+                  `Designation: ${application.designation || '-'}\n`) +
             `Reference number: ${application.referenceNumber}\n\n` +
             'The ID application can now be prepared from the staff admin ' +
             'dashboard (Membership Applications, "ID Application" tab):\n' +
@@ -1304,6 +1312,7 @@ router.patch(
                 mobileNumber: updated.mobile_number,
                 currentWorkingPlace: updated.current_working_place,
                 designation: updated.designation,
+                studentNumber: updated.student_number,
                 approvedBy: req.user && req.user.username ? req.user.username : null
             };
 
